@@ -9,7 +9,7 @@ from scipy.stats import chisquare
 st.set_page_config(page_title="4D Probabilistic Strength Analyzer", layout="wide")
 
 # GANTI LINK DI BAWAH DENGAN LINK CSV GOOGLE SHEETS ANDA
-GOOGLE_SHEETS_CSV_URL = "https://docs.google.com/spreadsheets/d/1prsu_8P8rxoKluOdbozwPrCdtJmGd9kBoqzfDnqVlVU/export?format=csv&gid=0"
+GOOGLE_SHEETS_CSV_URL = "https://docs.google.com/spreadsheets/d/1prsu_8P8rxoKluOdbozwPrCdtJmGd9kBoqzfDnqVlVU/edit?gid=1770339168#gid=1770339168"
 
 st.title("Multi-Signal 4D Probability Engine")
 st.warning(
