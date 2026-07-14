@@ -31,8 +31,13 @@ def load_data(source, is_url: bool):
         raise ValueError("The data source is empty.")
 
     df = df.iloc[1:]  # skip first row (assumed header/day names)
-    flat_text = " ".join(df.astype(str).values.flatten())
-    tokens = re.findall(r"\d{4}", flat_text)
+cells = []
+for row in df.itertuples(index=False):
+    for val in row:
+        if val is not None:
+            cells.append(str(val))
+flat_text = " ".join(cells)
+tokens = re.findall(r"\d{4}", flat_text)
 
     if len(tokens) < 10:
         digits = re.findall(r"\d", flat_text)
