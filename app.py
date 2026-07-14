@@ -1,92 +1,236 @@
 import streamlit as st
 import pandas as pd
-from collections import Counter
+import numpy as np
 import re
+from collections import Counter
+from itertools import product
+from scipy.stats import chisquare
 
-st.set_page_config(page_title="Day-Pair Matrix V4.2", layout="wide")
+st.set_page_config(page_title="4D Probabilistic Strength Analyzer", layout="wide")
 
-# ==========================================
-# 1. AUTO-FIX URL & EXTRACTOR
-# ==========================================
-def fix_url(url: str) -> str:
-    if "/edit" in url: return url.split("/edit")[0] + "/export?format=csv"
-    return url
+st.title("Multi-Signal 4D Probability Engine")
+st.warning(
+    "Statistical Disclaimer: This system combines Global Frequency, Recency-Weighting, "
+    "and Markov Transition (H to H+1) into a single composite score. This is NOT a guaranteed "
+    "prediction. If your data passes the chi-square test (distribution close to uniform), all "
+    "scores below are mathematically equivalent to random guessing - useful only as a historical "
+    "ranking, not an absolute forecast."
+)
 
-@st.cache_data(ttl=300, show_spinner=False)
-def load_and_verify_matrix(sheet_url: str):
-    df_raw = pd.read_csv(sheet_url, header=None, skiprows=1)
-    
-    # Ekstraksi brutal: Cari semua 4 digit angka
-    all_numbers = []
-    for _, row in df_raw.iterrows():
-        row_str = " ".join([str(val) for val in row.values if pd.notna(val)])
-        matches = re.findall(r'\b\d{4}\b', row_str)
-        all_numbers.extend(matches)
-        
-    # Validasi Kelipatan 7
-    total_found = len(all_numbers)
-    if total_found % 7 != 0:
-        st.warning(f"⚠️ Peringatan: Data tidak sempurna. Ditemukan {total_found} angka (bukan kelipatan 7). Mungkin ada data hari yang hilang.")
-    
-    # Distribusi ke Matriks
-    weeks = [all_numbers[i:i+7] for i in range(0, total_found - (total_found % 7), 7)]
-    df = pd.DataFrame(weeks, columns=["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"])
-    return df
-
-# ==========================================
-# 2. MAIN INTERFACE
-# ==========================================
-def main():
-    st.title("⚖️ Day-Pair Matrix V4.2 (Verified)")
-    
-    with st.sidebar:
-        st.header("⚙️ Database Setup")
-        raw_url = st.text_input("Google Sheets Link:")
-        sheet_url = fix_url(raw_url)
-
-    if not sheet_url:
-        st.info("👈 Masukkan link Google Sheets di menu kiri.")
-        return
-
+# ---------------------------------------------------------------------------
+# 1. DATA LOADING AND WRANGLING (robust: handles flattened, spaced, or NaN-separated CSV)
+# ---------------------------------------------------------------------------
+@st.cache_data(ttl=600, show_spinner=True)
+def load_data(source, is_url: bool):
     try:
-        df = load_and_verify_matrix(sheet_url)
-        st.sidebar.success(f"✅ Data Terbaca: {len(df)} Minggu.")
-        
-        # FITUR VERIFIKASI VISUAL (PENTING!)
-        with st.expander("👁️ Cek Data (Pastikan tabel di bawah ini benar)"):
-            st.dataframe(df.head(10)) 
-            st.write("Jika tabel di atas berantakan, artinya file CSV sumber Anda memang rusak/tidak beraturan.")
-
+        df = pd.read_csv(source, header=None, dtype=str)
     except Exception as e:
-        st.error(f"Gagal membaca data: {e}")
+        raise ValueError(f"Failed to read data source: {e}")
+
+    if df.empty:
+        raise ValueError("The data source is empty.")
+
+    df = df.iloc[1:]  # skip first row (assumed header/day names)
+    flat_text = " ".join(df.astype(str).values.flatten())
+    tokens = re.findall(r"\d{4}", flat_text)
+
+    if len(tokens) < 10:
+        digits = re.findall(r"\d", flat_text)
+        usable = len(digits) - (len(digits) % 4)
+        tokens = ["".join(digits[i:i + 4]) for i in range(0, usable, 4)]
+
+    if len(tokens) < 10:
+        raise ValueError("Not enough valid 4-digit entries found (minimum 10 required).")
+
+    return np.array(tokens, dtype=str)
+
+
+def chi_square_sanity_check(history: np.ndarray):
+    n = len(history)
+    results = []
+    for pos in range(4):
+        digits = [int(s[pos]) for s in history]
+        obs = np.bincount(digits, minlength=10)
+        exp = np.full(10, n / 10)
+        chi2, p = chisquare(obs, exp)
+        results.append({
+            "Position": f"Digit {pos + 1}",
+            "Chi2": round(chi2, 2),
+            "p-value": round(p, 4),
+            "Status": "Random (Normal)" if p > 0.05 else "Significant Bias Detected"
+        })
+    return pd.DataFrame(results)
+
+
+# ---------------------------------------------------------------------------
+# 2. MULTI-SIGNAL SCORING ENGINE
+# ---------------------------------------------------------------------------
+def build_pairs(history: np.ndarray):
+    return list(zip(history[:-1], history[1:]))
+
+
+def per_position_scores(history: np.ndarray, pairs, baseline: str, recency_halflife: int = 50):
+    """
+    Composite score per digit per position combining:
+      - Global frequency (all-time)
+      - Recency-weighted frequency (exponential decay, more weight on recent draws)
+      - Markov transition P(next_digit | today_digit == baseline_digit at same position)
+    """
+    n = len(history)
+    scores = []
+    for pos in range(4):
+        digit_series = np.array([int(s[pos]) for s in history])
+
+        global_freq = np.bincount(digit_series, minlength=10) / n
+
+        weights = np.exp(-np.arange(n)[::-1] / recency_halflife)
+        weighted_freq = np.zeros(10)
+        for d in range(10):
+            weighted_freq[d] = weights[digit_series == d].sum()
+        weighted_freq = weighted_freq / weighted_freq.sum()
+
+        markov_counter = Counter()
+        for today, tomorrow in pairs:
+            if today[pos] == baseline[pos]:
+                markov_counter[int(tomorrow[pos])] += 1
+        total_markov = sum(markov_counter.values())
+        markov_freq = np.zeros(10)
+        if total_markov > 0:
+            for d, c in markov_counter.items():
+                markov_freq[d] = c / total_markov
+
+        composite = (0.3 * global_freq) + (0.3 * weighted_freq) + (0.4 * markov_freq)
+        df_pos = pd.DataFrame({
+            "Digit": range(10),
+            "Global_Freq": global_freq.round(4),
+            "Recency_Freq": weighted_freq.round(4),
+            "Markov_Freq": markov_freq.round(4),
+            "Composite_Score": composite.round(4)
+        }).sort_values("Composite_Score", ascending=False).reset_index(drop=True)
+        scores.append(df_pos)
+    return scores
+
+
+def full_2d_markov(pairs, target_2d, top_n=5):
+    counter = Counter()
+    for today, tomorrow in pairs:
+        if today[2:] == target_2d:
+            counter[tomorrow[2:]] += 1
+    return counter.most_common(top_n)
+
+
+def generate_strong_numbers(scores, top_k=(2, 2, 3, 3)):
+    top_per_pos = []
+    for i, df_pos in enumerate(scores):
+        top_per_pos.append(list(df_pos.head(top_k[i])["Digit"].astype(str)))
+
+    combos = []
+    for d1, d2, d3, d4 in product(*top_per_pos):
+        s1 = scores[0].set_index("Digit").loc[int(d1), "Composite_Score"]
+        s2 = scores[1].set_index("Digit").loc[int(d2), "Composite_Score"]
+        s3 = scores[2].set_index("Digit").loc[int(d3), "Composite_Score"]
+        s4 = scores[3].set_index("Digit").loc[int(d4), "Composite_Score"]
+        combos.append({
+            "4D": f"{d1}{d2}{d3}{d4}",
+            "Back_2D": f"{d3}{d4}",
+            "Total_Score": round(s1 + s2 + s3 + s4, 4)
+        })
+    combos = pd.DataFrame(combos).sort_values("Total_Score", ascending=False).reset_index(drop=True)
+    return combos
+
+
+# ---------------------------------------------------------------------------
+# 3. UI
+# ---------------------------------------------------------------------------
+def main():
+    st.sidebar.header("Data Source")
+    mode = st.sidebar.radio("Choose data source:", ["Upload CSV", "GitHub Raw / Google Sheets URL"])
+
+    history = None
+    try:
+        if mode == "Upload CSV":
+            uploaded = st.sidebar.file_uploader("Upload CSV file", type=["csv"])
+            if uploaded:
+                history = load_data(uploaded, is_url=False)
+        else:
+            url = st.sidebar.text_input("CSV URL (GitHub raw / Google Sheets export)")
+            if url:
+                history = load_data(url, is_url=True)
+    except ValueError as ve:
+        st.error(f"Data Error: {ve}")
         return
 
-    # LOGIKA ANALISA (Sama seperti V4.1)
-    hari_list = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"]
-    target_hari = st.selectbox("Pilih Target Hari (Yang Ingin Ditebak):", hari_list, index=2)
-    idx_target = hari_list.index(target_hari)
-    prev_hari = hari_list[(idx_target - 1) % 7]
-    
-    baseline = st.text_input(f"Masukkan Hasil {prev_hari} (Baseline):", max_chars=4)
+    if history is None:
+        st.info("Please upload a CSV file or enter a data URL in the sidebar to begin.")
+        return
 
-    if st.button("Analisis"):
-        b_kep, b_ekor = baseline[2], baseline[3]
-        target_2d_utuh, target_k, target_e = [], [], []
+    st.success(f"{len(history)} historical 4D entries loaded successfully.")
 
-        for i in range(len(df)):
-            prev_val = df.iloc[i][prev_hari]
-            target_val = df.iloc[i][target_hari] if target_hari != "Senin" else (df.iloc[i+1][target_hari] if i+1 < len(df) else None)
-            
-            if prev_val and target_val:
-                if prev_val[2] == b_kep and prev_val[3] == b_ekor:
-                    target_2d_utuh.append(target_val[2:])
-                if prev_val[2] == b_kep: target_k.append(target_val[2])
-                if prev_val[3] == b_ekor: target_e.append(target_val[3])
+    with st.expander("Sanity Check: Chi-Square Test (Is This Data Truly Random?)"):
+        st.dataframe(chi_square_sanity_check(history), use_container_width=True)
+        st.caption(
+            "If p-value > 0.05 for all positions, the data is consistent with a pure RNG - "
+            "meaning the scores below are historical-descriptive only, not absolute predictions."
+        )
 
-        # OUTPUT
-        if target_2d_utuh:
-            st.success(f"2D Utuh: {Counter(target_2d_utuh).most_common(3)}")
-        st.info(f"Kepala Kuat: {Counter(target_k).most_common(2)} | Ekor Kuat: {Counter(target_e).most_common(2)}")
+    pairs = build_pairs(history)
+
+    st.divider()
+    st.subheader("Enter Yesterday's Number (Baseline H)")
+    baseline = st.text_input("Enter yesterday's 4-digit result (e.g. 3506):", max_chars=4)
+
+    recency_halflife = st.sidebar.slider(
+        "Recency Half-life (smaller = more focus on recent data)", 10, 200, 50
+    )
+
+    calc = st.button("Calculate Today's Strong Numbers (H+1)", type="primary")
+
+    if not calc:
+        return
+
+    baseline = baseline.strip()
+    if not baseline.isdigit() or len(baseline) != 4:
+        st.error("Baseline must be exactly 4 numeric digits (e.g. 3506).")
+        return
+
+    scores = per_position_scores(history, pairs, baseline, recency_halflife)
+
+    st.divider()
+    st.header("Composite Score per Position")
+    labels = ["Digit 1 (Thousands)", "Digit 2 (Hundreds)", "Digit 3 (Tens)", "Digit 4 (Units)"]
+    cols = st.columns(4)
+    for i, (label, df_pos) in enumerate(zip(labels, scores)):
+        with cols[i]:
+            st.markdown(f"**{label}**")
+            st.dataframe(df_pos.head(5), use_container_width=True, hide_index=True)
+
+    st.divider()
+    st.header("Priority: Back 2D (Tens + Units)")
+    target_2d = baseline[2:]
+    full_2d = full_2d_markov(pairs, target_2d, top_n=5)
+    if full_2d:
+        st.success(f"Historical transition matches found for 2D baseline '{target_2d}':")
+        st.table(pd.DataFrame(full_2d, columns=["Next_2D", "Frequency"]))
+    else:
+        st.warning(f"No direct historical match for 2D '{target_2d}' - falling back to independent composite scores.")
+
+    st.divider()
+    st.header("Strong Numbers (Top Composite 4D & Cross-Investment 2D)")
+    strong_numbers = generate_strong_numbers(scores)
+    st.dataframe(strong_numbers.head(10), use_container_width=True, hide_index=True)
+
+    top_2d = strong_numbers.drop_duplicates("Back_2D").head(5)[["Back_2D", "Total_Score"]]
+    st.subheader("Top 5 Recommended 2D (Cross-Investment)")
+    st.table(top_2d.reset_index(drop=True))
+
+    st.divider()
+    st.caption(
+        "Interpretation: The composite score blends Global Frequency (30%), "
+        "Recency-Weighted Frequency (30%), and Markov Transition H to H+1 (40%). "
+        "This ranking does NOT change the base probability of a truly random RNG - "
+        "use it as exploratory reference, not a guaranteed outcome."
+    )
+
 
 if __name__ == "__main__":
     main()
