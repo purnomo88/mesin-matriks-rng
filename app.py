@@ -21,7 +21,7 @@ st.warning(
 @st.cache_data(ttl=600, show_spinner=True)
 def load_data(source, is_url: bool):
     try:
-        df = pd.read_csv(source, header=None, dtype=str)
+        df = pd.read_csv(source, header=None)
     except Exception as e:
         raise ValueError(f"Failed to read data source: {e}")
 
@@ -33,7 +33,7 @@ def load_data(source, is_url: bool):
     cells = []
     for row in df.itertuples(index=False):
         for val in row:
-            if val is not None:
+            if pd.notna(val):
                 cells.append(str(val))
 
     flat_text = " ".join(cells)
@@ -143,14 +143,17 @@ def main():
     try:
         if mode == "Upload CSV":
             uploaded = st.sidebar.file_uploader("Upload CSV file", type=["csv"])
-            if uploaded:
+            if uploaded is not None:
                 history = load_data(uploaded, is_url=False)
         else:
             url = st.sidebar.text_input("CSV URL (GitHub raw / Google Sheets export)")
-            if url:
-                history = load_data(url, is_url=True)
+            if url and url.strip():
+                history = load_data(url.strip(), is_url=True)
     except ValueError as ve:
         st.error(f"Data Error: {ve}")
+        return
+    except Exception as e:
+        st.error(f"Unexpected Error: {e}")
         return
 
     if history is None:
@@ -186,7 +189,11 @@ def main():
         st.error("Baseline must be exactly 4 numeric digits (e.g. 3506).")
         return
 
-    scores = per_position_scores(history, pairs, baseline, recency_halflife)
+    try:
+        scores = per_position_scores(history, pairs, baseline, recency_halflife)
+    except Exception as e:
+        st.error(f"Calculation Error: {e}")
+        return
 
     st.divider()
     st.header("Composite Score per Position")
