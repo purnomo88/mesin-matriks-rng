@@ -8,6 +8,9 @@ from scipy.stats import chisquare
 
 st.set_page_config(page_title="4D Probabilistic Strength Analyzer", layout="wide")
 
+# GANTI LINK DI BAWAH DENGAN LINK CSV GOOGLE SHEETS ANDA
+GOOGLE_SHEETS_CSV_URL = "https://docs.google.com/spreadsheets/d/1prsu_8P8rxoKluOdbozwPrCdtJmGd9kBoqzfDnqVlVU/export?format=csv&gid=0"
+
 st.title("Multi-Signal 4D Probability Engine")
 st.warning(
     "Statistical Disclaimer: This system combines Global Frequency, Recency-Weighting, "
@@ -19,7 +22,7 @@ st.warning(
 
 
 @st.cache_data(ttl=600, show_spinner=True)
-def load_data(source, is_url: bool):
+def load_data(source):
     try:
         df = pd.read_csv(source, header=None)
     except Exception as e:
@@ -74,6 +77,7 @@ def build_pairs(history: np.ndarray):
 def per_position_scores(history: np.ndarray, pairs, baseline: str, recency_halflife: int = 50):
     n = len(history)
     scores = []
+
     for pos in range(4):
         digit_series = np.array([int(s[pos]) for s in history])
 
@@ -89,6 +93,7 @@ def per_position_scores(history: np.ndarray, pairs, baseline: str, recency_halfl
         for today, tomorrow in pairs:
             if today[pos] == baseline[pos]:
                 markov_counter[int(tomorrow[pos])] += 1
+
         total_markov = sum(markov_counter.values())
         markov_freq = np.zeros(10)
         if total_markov > 0:
@@ -96,6 +101,7 @@ def per_position_scores(history: np.ndarray, pairs, baseline: str, recency_halfl
                 markov_freq[d] = c / total_markov
 
         composite = (0.3 * global_freq) + (0.3 * weighted_freq) + (0.4 * markov_freq)
+
         df_pos = pd.DataFrame({
             "Digit": range(10),
             "Global_Freq": global_freq.round(4),
@@ -103,7 +109,9 @@ def per_position_scores(history: np.ndarray, pairs, baseline: str, recency_halfl
             "Markov_Freq": markov_freq.round(4),
             "Composite_Score": composite.round(4)
         }).sort_values("Composite_Score", ascending=False).reset_index(drop=True)
+
         scores.append(df_pos)
+
     return scores
 
 
@@ -126,29 +134,29 @@ def generate_strong_numbers(scores, top_k=(2, 2, 3, 3)):
         s2 = scores[1].set_index("Digit").loc[int(d2), "Composite_Score"]
         s3 = scores[2].set_index("Digit").loc[int(d3), "Composite_Score"]
         s4 = scores[3].set_index("Digit").loc[int(d4), "Composite_Score"]
+
         combos.append({
             "4D": f"{d1}{d2}{d3}{d4}",
             "Back_2D": f"{d3}{d4}",
             "Total_Score": round(s1 + s2 + s3 + s4, 4)
         })
+
     combos = pd.DataFrame(combos).sort_values("Total_Score", ascending=False).reset_index(drop=True)
     return combos
 
 
 def main():
-    st.sidebar.header("Data Source")
-    mode = st.sidebar.radio("Choose data source:", ["Upload CSV", "GitHub Raw / Google Sheets URL"])
+    st.sidebar.header("Settings")
+    recency_halflife = st.sidebar.slider(
+        "Recency Half-life (smaller = more focus on recent data)", 10, 200, 50
+    )
 
-    history = None
+    if not GOOGLE_SHEETS_CSV_URL.strip() or GOOGLE_SHEETS_CSV_URL == "PASTE_LINK_CSV_GOOGLE_SHEETS_DI_SINI":
+        st.error("Please fill GOOGLE_SHEETS_CSV_URL in app.py first.")
+        return
+
     try:
-        if mode == "Upload CSV":
-            uploaded = st.sidebar.file_uploader("Upload CSV file", type=["csv"])
-            if uploaded is not None:
-                history = load_data(uploaded, is_url=False)
-        else:
-            url = st.sidebar.text_input("CSV URL (GitHub raw / Google Sheets export)")
-            if url and url.strip():
-                history = load_data(url.strip(), is_url=True)
+        history = load_data(GOOGLE_SHEETS_CSV_URL.strip())
     except ValueError as ve:
         st.error(f"Data Error: {ve}")
         return
@@ -156,11 +164,8 @@ def main():
         st.error(f"Unexpected Error: {e}")
         return
 
-    if history is None:
-        st.info("Please upload a CSV file or enter a data URL in the sidebar to begin.")
-        return
-
     st.success(f"{len(history)} historical 4D entries loaded successfully.")
+    st.caption("Data source: Google Sheets CSV URL")
 
     with st.expander("Sanity Check: Chi-Square Test (Is This Data Truly Random?)"):
         st.dataframe(chi_square_sanity_check(history), use_container_width=True)
@@ -174,10 +179,6 @@ def main():
     st.divider()
     st.subheader("Enter Yesterday's Number (Baseline H)")
     baseline = st.text_input("Enter yesterday's 4-digit result (e.g. 3506):", max_chars=4)
-
-    recency_halflife = st.sidebar.slider(
-        "Recency Half-life (smaller = more focus on recent data)", 10, 200, 50
-    )
 
     calc = st.button("Calculate Today's Strong Numbers (H+1)", type="primary")
 
@@ -199,6 +200,7 @@ def main():
     st.header("Composite Score per Position")
     labels = ["Digit 1 (Thousands)", "Digit 2 (Hundreds)", "Digit 3 (Tens)", "Digit 4 (Units)"]
     cols = st.columns(4)
+
     for i, (label, df_pos) in enumerate(zip(labels, scores)):
         with cols[i]:
             st.markdown(f"**{label}**")
@@ -208,6 +210,7 @@ def main():
     st.header("Priority: Back 2D (Tens + Units)")
     target_2d = baseline[2:]
     full_2d = full_2d_markov(pairs, target_2d, top_n=5)
+
     if full_2d:
         st.success(f"Historical transition matches found for 2D baseline '{target_2d}':")
         st.table(pd.DataFrame(full_2d, columns=["Next_2D", "Frequency"]))
