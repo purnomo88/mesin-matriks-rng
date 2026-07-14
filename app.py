@@ -17,9 +17,7 @@ st.warning(
     "ranking, not an absolute forecast."
 )
 
-# ---------------------------------------------------------------------------
-# 1. DATA LOADING AND WRANGLING (robust: handles flattened, spaced, or NaN-separated CSV)
-# ---------------------------------------------------------------------------
+
 @st.cache_data(ttl=600, show_spinner=True)
 def load_data(source, is_url: bool):
     try:
@@ -30,14 +28,16 @@ def load_data(source, is_url: bool):
     if df.empty:
         raise ValueError("The data source is empty.")
 
-    df = df.iloc[1:]  # skip first row (assumed header/day names)
-cells = []
-for row in df.itertuples(index=False):
-    for val in row:
-        if val is not None:
-            cells.append(str(val))
-flat_text = " ".join(cells)
-tokens = re.findall(r"\d{4}", flat_text)
+    df = df.iloc[1:]
+
+    cells = []
+    for row in df.itertuples(index=False):
+        for val in row:
+            if val is not None:
+                cells.append(str(val))
+
+    flat_text = " ".join(cells)
+    tokens = re.findall(r"\d{4}", flat_text)
 
     if len(tokens) < 10:
         digits = re.findall(r"\d", flat_text)
@@ -67,20 +67,11 @@ def chi_square_sanity_check(history: np.ndarray):
     return pd.DataFrame(results)
 
 
-# ---------------------------------------------------------------------------
-# 2. MULTI-SIGNAL SCORING ENGINE
-# ---------------------------------------------------------------------------
 def build_pairs(history: np.ndarray):
     return list(zip(history[:-1], history[1:]))
 
 
 def per_position_scores(history: np.ndarray, pairs, baseline: str, recency_halflife: int = 50):
-    """
-    Composite score per digit per position combining:
-      - Global frequency (all-time)
-      - Recency-weighted frequency (exponential decay, more weight on recent draws)
-      - Markov transition P(next_digit | today_digit == baseline_digit at same position)
-    """
     n = len(history)
     scores = []
     for pos in range(4):
@@ -144,9 +135,6 @@ def generate_strong_numbers(scores, top_k=(2, 2, 3, 3)):
     return combos
 
 
-# ---------------------------------------------------------------------------
-# 3. UI
-# ---------------------------------------------------------------------------
 def main():
     st.sidebar.header("Data Source")
     mode = st.sidebar.radio("Choose data source:", ["Upload CSV", "GitHub Raw / Google Sheets URL"])
