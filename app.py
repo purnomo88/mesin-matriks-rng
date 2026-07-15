@@ -7,7 +7,7 @@ from collections import Counter
 from itertools import product
 from google.oauth2.service_account import Credentials
 
-st.set_page_config(page_title="GLM 5.2 | Pure Day-Pair Engine", layout="wide")
+st.set_page_config(page_title="GLM 6.0 | Advanced Markov Order-2", layout="wide")
 
 SPREADSHEET_ID = "1prsu_8P8rxoKluOdbozwPrCdtJmGd9kBoqzfDnqVlVU"
 WORKSHEET_NAME = "DB"
@@ -19,7 +19,7 @@ SCOPES = [
 ]
 
 # ==========================================
-# 1. KONEKSI & WRANGLING DATA (STRUKTUR HARI TETAP UTUH)
+# 1. KONEKSI & WRANGLING DATA
 # ==========================================
 @st.cache_resource
 def get_gsheet_client():
@@ -56,101 +56,100 @@ def load_and_clean_matrix():
     return df
 
 # ==========================================
-# 2. CORE MATHEMATICS (RESTORED TO V4.2 HYBRID)
+# 2. MESIN MATEMATIKA (MARKOV ORDER-2 & TWIN FILTER)
 # ==========================================
-def per_position_hybrid(data_prev, data_target, baseline, target_hari, recency_limit=60):
-    # Filter data valid berpasangan
+def hybrid_engine_order2(data_prev, data_target, baseline, recency_limit=60):
     pairs = []
     for i in range(len(data_prev)):
         today = data_prev[i]
         tomorrow = data_target[i]
-        if target_hari == "Senin" and i + 1 < len(data_prev):
-            tomorrow = data_target[i+1]
         if today and tomorrow:
             pairs.append((today, tomorrow))
             
-    # Ambil tren terbaru (Recency Window) untuk mengunci pergeseran aktif
     recent_pairs = pairs[-recency_limit:] if len(pairs) > recency_limit else pairs
     
-    scores = []
-    # Jalankan kalkulasi per posisi (As, Kop, Kepala, Ekor)
-    for pos in range(4):
+    # ---------------------------------------------------------
+    # A. Kalkulasi Posisi Depan (AS & KOP) secara Independen
+    # ---------------------------------------------------------
+    front_scores = []
+    for pos in range(2):
         b_digit = baseline[pos]
+        m_counter = Counter([tom[pos] for tod, tom in pairs if tod[pos] == b_digit])
+        r_counter = Counter([tom[pos] for tod, tom in recent_pairs if tod[pos] == b_digit])
         
-        # 1. Markov Bersyarat Hari Spesifik
-        markov_counter = Counter()
-        for today, tomorrow in pairs:
-            if today[pos] == b_digit:
-                markov_counter[tomorrow[pos]] += 1
-                
-        # 2. Recency Counter (Tren 60 minggu terakhir pada hari spesifik)
-        recency_counter = Counter()
-        for today, tomorrow in recent_pairs:
-            if today[pos] == b_digit:
-                recency_counter[tomorrow[pos]] += 1
-                
-        # 3. Stagnation Offset (Toleransi tarikan matematika +3 / -2 / Tetap)
-        b_int = int(b_digit)
-        offsets = [str((b_int + 3) % 10), str((b_int - 2) % 10), b_digit]
+        pos_scores = {str(d): 0.1 for d in range(10)}
         
-        # Penggabungan Skor tanpa sistem Multiplier Sinergi palsu
-        pos_scores = Counter()
-        # Isi semua digit 0-9 dengan bobot dasar yang merata
-        for d in map(str, range(10)):
-            pos_scores[d] = 0.1
+        tot_m = sum(m_counter.values())
+        if tot_m > 0:
+            for d, c in m_counter.items(): pos_scores[d] += (c / tot_m) * 0.4
+                
+        tot_r = sum(r_counter.values())
+        if tot_r > 0:
+            for d, c in r_counter.items(): pos_scores[d] += (c / tot_r) * 0.3
             
-        # Tambahkan bobot Markov (Kekuatan Sejarah)
-        total_m = sum(markov_counter.values())
-        if total_m > 0:
-            for d, c in markov_counter.items():
-                pos_scores[d] += (c / total_m) * 0.5
-                
-        # Tambahkan bobot Recency (Kekuatan Tren Baru)
-        total_r = sum(recency_counter.values())
-        if total_r > 0:
-            for d, c in recency_counter.items():
-                pos_scores[d] += (c / total_r) * 0.3
-                
-        # Tambahkan bobot Toleransi Stagnasi
-        for d in offsets:
-            pos_scores[d] += 0.1
-            
-        df_pos = pd.DataFrame(pos_scores.most_common(10), columns=["Digit", "Skor"])
-        scores.append(df_pos)
+        df_pos = pd.DataFrame(list(pos_scores.items()), columns=["Digit", "Skor"]).sort_values("Skor", ascending=False)
+        front_scores.append(df_pos)
         
-    return scores, pairs
-
-def generate_output_matrix(scores, pairs, baseline, top_k=(2, 2, 3, 3)):
-    top_per_pos = [list(scores[i].head(top_k[i])["Digit"].tolist()) for i in range(4)]
-    
-    # 2D Sejarah Utuh (Markov Lurus Bersyarat)
+    # ---------------------------------------------------------
+    # B. Kalkulasi Blok 2D Belakang (Order-2)
+    # ---------------------------------------------------------
     b_2d = baseline[2:]
-    hist_2d_counter = Counter()
-    for today, tomorrow in pairs:
-        if today[2:] == b_2d:
-            hist_2d_counter[tomorrow[2:]] += 1
-    full_2d_matches = [item[0] for item in hist_2d_counter.most_common(6)]
+    m_2d_counter = Counter([tom[2:] for tod, tom in pairs if tod[2:] == b_2d])
+    r_2d_counter = Counter([tom[2:] for tod, tom in recent_pairs if tod[2:] == b_2d])
+    g_2d_counter = Counter([tom[2:] for tod, tom in pairs])
     
-    # Jaring Kombinasi
-    combos = []
-    for d1, d2, d3, d4 in product(*top_per_pos):
-        s1 = scores[0].set_index("Digit").loc[d1, "Skor"]
-        s2 = scores[1].set_index("Digit").loc[d2, "Skor"]
-        s3 = scores[2].set_index("Digit").loc[d3, "Skor"]
-        s4 = scores[3].set_index("Digit").loc[d4, "Skor"]
+    tot_g_2d = sum(g_2d_counter.values())
+    tot_m_2d = sum(m_2d_counter.values())
+    tot_r_2d = sum(r_2d_counter.values())
+    
+    scores_2d = {}
+    for i in range(100):
+        d2_str = f"{i:02d}"
+        s_g = (g_2d_counter[d2_str] / tot_g_2d) * 0.2 if tot_g_2d else 0.01
+        s_m = (m_2d_counter[d2_str] / tot_m_2d) * 0.5 if tot_m_2d else 0
+        s_r = (r_2d_counter[d2_str] / tot_r_2d) * 0.3 if tot_r_2d else 0
+        scores_2d[d2_str] = s_g + s_m + s_r + 0.01 # Base probability
         
+    df_2d = pd.DataFrame(list(scores_2d.items()), columns=["2D", "Skor"]).sort_values("Skor", ascending=False)
+    
+    # Deteksi Sejarah Lurus 2D
+    hist_2d_matches = [item[0] for item in m_2d_counter.most_common(6)]
+    
+    # ---------------------------------------------------------
+    # C. Deteksi Twin-Symmetry (Angka Kembar)
+    # ---------------------------------------------------------
+    twin_count = sum(1 for _, tom in recent_pairs if tom[0] == tom[1])
+    twin_rate = twin_count / len(recent_pairs) if recent_pairs else 0
+    # Jika twin_rate kecil (jarang kembar), penalti angka kembar. Jika besar, boost.
+    twin_multiplier = 1.5 if twin_rate > 0.15 else 0.4 
+    
+    return front_scores, df_2d, hist_2d_matches, twin_multiplier
+
+def generate_combinations(front_scores, df_2d, twin_multiplier, top_as=3, top_kop=3, top_2d=6):
+    as_list = front_scores[0].head(top_as).values.tolist()
+    kop_list = front_scores[1].head(top_kop).values.tolist()
+    belakang_list = df_2d.head(top_2d).values.tolist()
+    
+    combos = []
+    for (d_as, s_as), (d_kop, s_kop), (d_2d, s_2d) in product(as_list, kop_list, belakang_list):
+        base_score = s_as + s_kop + s_2d
+        
+        # Terapkan filter kembar (Mencegah stuck di 99xx)
+        if d_as == d_kop:
+            base_score *= twin_multiplier
+            
         combos.append({
-            "4D": f"{d1}{d2}{d3}{d4}",
-            "3D": f"{d2}{d3}{d4}",
-            "2D": f"{d3}{d4}",
-            "Total": s1 + s2 + s3 + s4
+            "4D": f"{d_as}{d_kop}{d_2d}",
+            "3D": f"{d_kop}{d_2d}",
+            "2D": d_2d,
+            "Total": base_score
         })
         
     df_c = pd.DataFrame(combos).sort_values("Total", ascending=False).reset_index(drop=True)
-    return df_c, full_2d_matches
+    return df_c
 
 # ==========================================
-# 3. ANTARMUKA DASBOR (COMPACT & PURE TEXT)
+# 3. ANTARMUKA COPY-PASTE BLOG
 # ==========================================
 def main():
     st.title("Sistem ini ditenagai oleh model komputasi matematis kompleks yang mengekstraksi matriks transisi dari database historis berskala besar sebagai referensi probabilitas analitik, bukan sebagai jaminan kepastian mutlak.")
@@ -174,7 +173,7 @@ def main():
     with colB:
         baseline = st.text_input(f"Masukkan Hasil {prev_hari} (Baseline H-1):", max_chars=4)
         
-    if st.button("Jalankan Pemurnian Matriks Hari", type="primary"):
+    if st.button("Jalankan Mesin GLM 6.0", type="primary"):
         if len(baseline) != 4 or not baseline.isdigit():
             st.error("Input eror. Masukkan tepat 4 digit.")
             return
@@ -182,44 +181,50 @@ def main():
         data_prev = df_matrix[prev_hari].tolist()
         data_target = df_matrix[target_hari].tolist()
         
-        # Eksekusi Rumus Murni Kembali
-        scores, pairs = per_position_hybrid(data_prev, data_target, baseline, target_hari)
-        df_combos, full_2d_matches = generate_output_matrix(scores, pairs, baseline)
-        
-        # Ekstraksi Data Posisi
-        def get_line(df_pos):
-            top2 = df_pos.head(2)["Digit"].tolist()
-            return f"{top2[0]} & {top2[1]}", top2[0]
+        # FIX: Penyesuaian jika target hari adalah Senin
+        if target_hari == "Senin":
+            data_target = data_target[1:] + [""]
+            data_prev = data_prev[:len(data_target)]
             
-        as_pot, as_kuat = get_line(scores[0])
-        kop_pot, kop_kuat = get_line(scores[1])
-        kep_pot, kep_kuat = get_line(scores[2])
-        eko_pot, eko_kuat = get_line(scores[3])
-        
-        # Ekstraksi BBFS
-        all_digits = []
-        for df_pos in scores:
-            all_digits.extend(df_pos.head(3)["Digit"].tolist())
-        bbfs_counts = Counter(all_digits)
-        bbfs6 = "".join([item[0] for item in bbfs_counts.most_common(6)])
-        
-        # Ekstraksi Top Line
-        list_4d = df_combos["4D"].head(4).tolist()
-        list_3d = df_combos.drop_duplicates("3D")["3D"].head(4).tolist()
-        list_2d = df_combos.drop_duplicates("2D")["2D"].head(4).tolist()
-        
-        hist_2d_str = ", ".join(full_2d_matches) if full_2d_matches else "Belum ada sejarah utuh"
+        with st.spinner("Memproses Markov Order-2 & Twin Filter..."):
+            front_scores, df_2d, hist_2d_str_list, twin_mult = hybrid_engine_order2(data_prev, data_target, baseline)
+            df_combos = generate_combinations(front_scores, df_2d, twin_mult)
+            
+            # Ekstraksi Posisi (Format 2 Line Bersih)
+            as_line = f"{front_scores[0].iloc[0]['Digit']} & {front_scores[0].iloc[1]['Digit']}"
+            kop_line = f"{front_scores[1].iloc[0]['Digit']} & {front_scores[1].iloc[1]['Digit']}"
+            
+            # Kepala & Ekor diekstrak dari blok 2D terbaik agar akurat
+            top_kepala = list(dict.fromkeys([x[0] for x in df_2d["2D"].head(5)]))
+            top_ekor = list(dict.fromkeys([x[1] for x in df_2d["2D"].head(5)]))
+            kep_line = f"{top_kepala[0]} & {top_kepala[1]}" if len(top_kepala)>1 else top_kepala[0]
+            eko_line = f"{top_ekor[0]} & {top_ekor[1]}" if len(top_ekor)>1 else top_ekor[0]
+            
+            # Ekstraksi Top Line
+            list_4d = df_combos["4D"].head(4).tolist()
+            list_3d = df_combos.drop_duplicates("3D")["3D"].head(4).tolist()
+            list_2d = df_combos.drop_duplicates("2D")["2D"].head(4).tolist()
+            
+            hist_2d_str = ", ".join(hist_2d_str_list) if hist_2d_str_list else "Belum ada sejarah utuh"
+            
+            # BBFS Ekstraksi dari kekuatan penuh
+            all_digits = (
+                front_scores[0].head(3)["Digit"].tolist() + 
+                front_scores[1].head(3)["Digit"].tolist() + 
+                top_kepala[:3] + top_ekor[:3]
+            )
+            bbfs_counts = Counter(all_digits)
+            bbfs6 = "".join([item[0] for item in bbfs_counts.most_common(6)])
         
         st.divider()
-        st.success("✅ Output Murni Siap Disalin!")
-        st.info("Klik ikon 'Copy' di pojok kanan atas boks di bawah ini untuk langsung ditempel ke Blog.")
+        st.success("✅ Algoritma Selesai! Output Siap Disalin.")
         
         raw_text = f"""Analisis Posisi Angka:
 
-AS\t\t: {as_pot}\tTERKUAT\t: {as_kuat}
-KOP\t\t: {kop_pot}\tTERKUAT\t: {kop_kuat}
-KEPALA\t: {kep_pot}\tTERKUAT\t: {kep_kuat}
-EKOR\t: {eko_pot}\tTERKUAT\t: {eko_kuat}
+AS\t\t: {as_line}
+KOP\t\t: {kop_line}
+KEPALA\t\t: {kep_line}
+EKOR\t\t: {eko_line}
 
 Matriks Jaring Silang:
 
