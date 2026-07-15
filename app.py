@@ -63,24 +63,7 @@ def load_data():
     if len(tokens) < 10:
         raise ValueError("Data 4 digit valid kurang dari 10 entri.")
 
-    return np.array(tokens, dtype=str), df_sheet
-
-
-def chi_square_sanity_check(history: np.ndarray):
-    n = len(history)
-    results = []
-    for pos in range(4):
-        digits = [int(s[pos]) for s in history]
-        obs = np.bincount(digits, minlength=10)
-        exp = np.full(10, n / 10)
-        chi2, p = chisquare(obs, exp)
-        results.append({
-            "Posisi": f"Digit {pos + 1}",
-            "Chi2": round(chi2, 2),
-            "p-value": round(p, 4),
-            "Status": "Normal / Acak" if p > 0.05 else "Ada Bias Historis"
-        })
-    return pd.DataFrame(results)
+    return np.array(tokens, dtype=str)
 
 
 def build_pairs(history: np.ndarray):
@@ -117,10 +100,10 @@ def per_position_scores(history: np.ndarray, pairs, baseline: str, recency_halfl
 
         df_pos = pd.DataFrame({
             "Digit": range(10),
-            "Frekuensi_Global": global_freq.round(4),
-            "Frekuensi_Recency": weighted_freq.round(4),
-            "Frekuensi_Markov": markov_freq.round(4),
-            "Skor_Gabungan": composite.round(4)
+            "Frekuensi_Global": global_freq,
+            "Frekuensi_Recency": weighted_freq,
+            "Frekuensi_Markov": markov_freq,
+            "Skor_Gabungan": composite
         }).sort_values("Skor_Gabungan", ascending=False).reset_index(drop=True)
 
         scores.append(df_pos)
@@ -128,7 +111,7 @@ def per_position_scores(history: np.ndarray, pairs, baseline: str, recency_halfl
     return scores
 
 
-def full_2d_markov(pairs, target_2d, top_n=5):
+def full_2d_markov(pairs, target_2d, top_n=4):
     counter = Counter()
     for today, tomorrow in pairs:
         if today[2:] == target_2d:
@@ -152,11 +135,10 @@ def generate_strong_numbers(scores, top_k=(2, 2, 3, 3)):
             "4D": f"{d1}{d2}{d3}{d4}",
             "3D": f"{d2}{d3}{d4}",
             "2D_Belakang": f"{d3}{d4}",
-            "Skor_Total": round(s1 + s2 + s3 + s4, 4)
+            "Skor_Total": float(s1 + s2 + s3 + s4)
         })
 
-    combos = pd.DataFrame(combos).sort_values("Skor_Total", ascending=False).reset_index(drop=True)
-    return combos
+    return pd.DataFrame(combos).sort_values("Skor_Total", ascending=False).reset_index(drop=True)
 
 
 def top_unique(df, key_col, score_col, n):
@@ -168,20 +150,47 @@ def aggregate_digit_strength(scores):
     for df_pos in scores:
         for _, row in df_pos.iterrows():
             total[str(int(row["Digit"]))] += float(row["Skor_Gabungan"])
-    rows = [{"Digit": k, "Skor_Agregat": round(v, 4)} for k, v in total.items()]
+    rows = [{"Digit": k, "Skor_Agregat": v} for k, v in total.items()]
     return pd.DataFrame(rows).sort_values("Skor_Agregat", ascending=False).reset_index(drop=True)
 
 
-def one_digit_label(scores, pos_index):
-    return str(int(scores[pos_index].iloc[0]["Digit"]))
+def top_two_digits(scores, pos_index):
+    vals = scores[pos_index].head(2)["Digit"].astype(int).astype(str).tolist()
+    if len(vals) == 1:
+        return vals[0]
+    return f"{vals[0]} dan {vals[1]}"
 
 
-def show_simple_table(title, df, col1, col2=None):
-    st.markdown(f"### {title}")
-    if col2:
-        st.table(df.rename(columns={col1: "Nilai", col2: "Skor"}))
+def to_percent_series(df, score_col):
+    df = df.copy()
+    max_score = df[score_col].max() if not df.empty else 0
+    if max_score <= 0:
+        df["Persen"] = 0
     else:
-        st.table(df.rename(columns={col1: "Nilai"}))
+        df["Persen"] = (df[score_col] / max_score * 100).round(1)
+    return df
+
+
+def render_lines(title, df, key_col, percent_col="Persen"):
+    st.markdown(f"### {title}")
+    for _, row in df.iterrows():
+        st.write(f"{row[key_col]}  →  {row[percent_col]}%")
+    st.write("")
+
+
+def render_historical_2d(df_hist):
+    st.markdown("### 2D Belakang Historis")
+    st.caption(
+        "Bagian ini menampilkan 2 digit belakang yang paling sering muncul sebagai lanjutan historis "
+        "ketika 2 digit belakang baseline kemarin pernah muncul di data sebelumnya."
+    )
+    if "Persen" in df_hist.columns:
+        for _, row in df_hist.iterrows():
+            st.write(f"{row['2D_Belakang']}  →  {row['Persen']}%")
+    else:
+        for _, row in df_hist.iterrows():
+            st.write(f"{row['2D_Belakang']}  →  {row['Frekuensi']}x")
+    st.write("")
 
 
 def main():
@@ -189,30 +198,13 @@ def main():
     st.caption("Mode utama: baseline memakai hasil 4D kemarin.")
 
     st.info(
-        "Mesin ini mempertahankan rumus lama Anda, lalu membaca histori langsung dari sheet DB "
-        "dan menampilkan hasil dalam Bahasa Indonesia."
+        "Sistem ini ditenagai oleh model komputasi matematis kompleks yang mengekstraksi "
+        "matriks transisi dari database historis berskala besar sebagai referensi probabilitas "
+        "analitik, bukan sebagai jaminan kepastian mutlak."
     )
-
-    st.sidebar.header("Pengaturan")
-    recency_halflife = st.sidebar.slider(
-        "Bobot data terbaru (lebih kecil = lebih fokus ke data terbaru)",
-        min_value=10,
-        max_value=200,
-        value=50
-    )
-
-    with st.expander("Penjelasan Dashboard", expanded=False):
-        st.markdown("""
-- **Bobot data terbaru**: mengatur seberapa besar pengaruh data terbaru dibanding data lama.
-- **Baseline hasil kemarin**: angka 4 digit kemarin yang dipakai sebagai acuan analisis utama.
-- **Skor gabungan**: gabungan dari frekuensi global, bobot data terbaru, dan transisi historis.
-- **4D / 3D / 2D skor atas**: ringkasan kombinasi historis dengan skor gabungan tertinggi.
-- **As / Kop / Kepala / Ekor**: digit teratas per posisi.
-- **BBFS 6 digit**: 6 digit dengan skor agregat tertinggi dari seluruh posisi.
-        """)
 
     try:
-        history, df_sheet = load_data()
+        history = load_data()
     except ValueError as ve:
         st.error(f"Kesalahan data: {ve}")
         return
@@ -221,19 +213,13 @@ def main():
         return
 
     st.success(f"{len(history)} entri historis 4D berhasil dimuat.")
-    st.caption("Sumber data: Google Sheets > sheet DB")
 
-    with st.expander("Preview data DB", expanded=False):
-        st.dataframe(df_sheet.tail(20), use_container_width=True)
-
-    with st.expander("Cek distribusi historis", expanded=False):
-        st.dataframe(chi_square_sanity_check(history), use_container_width=True)
-
-    pairs = build_pairs(history)
-
-    st.divider()
-    st.subheader("Input baseline")
-    baseline = st.text_input("Masukkan hasil 4D kemarin:", max_chars=4, placeholder="Contoh: 3506")
+    st.subheader("Input Baseline")
+    baseline = st.text_input(
+        "Masukkan hasil 4D kemarin:",
+        max_chars=4,
+        placeholder="Contoh: 3506"
+    )
 
     proses = st.button("Proses Analisis", type="primary")
 
@@ -246,7 +232,8 @@ def main():
         return
 
     try:
-        scores = per_position_scores(history, pairs, baseline, recency_halflife)
+        pairs = build_pairs(history)
+        scores = per_position_scores(history, pairs, baseline, recency_halflife=50)
         strong_numbers = generate_strong_numbers(scores)
     except Exception as e:
         st.error(f"Kesalahan perhitungan: {e}")
@@ -255,79 +242,69 @@ def main():
     target_2d = baseline[2:]
     full_2d = full_2d_markov(pairs, target_2d, top_n=4)
 
+    hasil_4d_4 = to_percent_series(strong_numbers.head(4)[["4D", "Skor_Total"]], "Skor_Total")
+    hasil_4d_2 = to_percent_series(strong_numbers.head(2)[["4D", "Skor_Total"]], "Skor_Total")
+
+    hasil_3d_4 = to_percent_series(
+        top_unique(strong_numbers.rename(columns={"3D": "Nilai_3D"}), "Nilai_3D", "Skor_Total", 4),
+        "Skor_Total"
+    )
+    hasil_3d_2 = to_percent_series(
+        top_unique(strong_numbers.rename(columns={"3D": "Nilai_3D"}), "Nilai_3D", "Skor_Total", 2),
+        "Skor_Total"
+    )
+
+    hasil_2d_4 = to_percent_series(
+        top_unique(strong_numbers, "2D_Belakang", "Skor_Total", 4),
+        "Skor_Total"
+    )
+    hasil_2d_2 = to_percent_series(
+        top_unique(strong_numbers, "2D_Belakang", "Skor_Total", 2),
+        "Skor_Total"
+    )
+
     if full_2d:
         df_2d_hist = pd.DataFrame(full_2d, columns=["2D_Belakang", "Frekuensi"])
+        df_2d_hist["Persen"] = (df_2d_hist["Frekuensi"] / df_2d_hist["Frekuensi"].max() * 100).round(1)
     else:
-        df_2d_hist = top_unique(strong_numbers, "2D_Belakang", "Skor_Total", 4).rename(
-            columns={"Skor_Total": "Frekuensi"}
-        )
+        df_2d_hist = hasil_2d_4[["2D_Belakang", "Persen"]].copy()
 
-    hasil_4d_4 = strong_numbers.head(4)[["4D", "Skor_Total"]]
-    hasil_4d_2 = strong_numbers.head(2)[["4D", "Skor_Total"]]
-
-    hasil_3d_4 = top_unique(
-        strong_numbers.rename(columns={"3D": "Nilai_3D"}), "Nilai_3D", "Skor_Total", 4
-    )
-    hasil_3d_2 = top_unique(
-        strong_numbers.rename(columns={"3D": "Nilai_3D"}), "Nilai_3D", "Skor_Total", 2
-    )
-
-    hasil_2d_4 = top_unique(strong_numbers, "2D_Belakang", "Skor_Total", 4)
-    hasil_2d_2 = top_unique(strong_numbers, "2D_Belakang", "Skor_Total", 2)
-
-    as_top = one_digit_label(scores, 0)
-    kop_top = one_digit_label(scores, 1)
-    kepala_top = one_digit_label(scores, 2)
-    ekor_top = one_digit_label(scores, 3)
+    as_potensial = top_two_digits(scores, 0)
+    kop_potensial = top_two_digits(scores, 1)
+    kepala_potensial = top_two_digits(scores, 2)
+    ekor_potensial = top_two_digits(scores, 3)
 
     digit_agregat = aggregate_digit_strength(scores)
     bbfs6 = "".join(digit_agregat.head(6)["Digit"].astype(str).tolist())
-    digit_umum_teratas = digit_agregat.iloc[0]["Digit"]
 
     st.divider()
-    st.header("Hasil Ringkas")
+    st.header("Skor Atas")
 
-    col_a, col_b = st.columns(2)
+    col1, col2 = st.columns(2)
 
-    with col_a:
-        show_simple_table("4D Skor Atas (4 baris)", hasil_4d_4, "4D", "Skor_Total")
-        show_simple_table("4D Skor Tertinggi (2 baris)", hasil_4d_2, "4D", "Skor_Total")
-        show_simple_table("3D Skor Atas (4 baris)", hasil_3d_4, "Nilai_3D", "Skor_Total")
-        show_simple_table("3D Skor Tertinggi (2 baris)", hasil_3d_2, "Nilai_3D", "Skor_Total")
+    with col1:
+        render_lines("4D Skor Atas", hasil_4d_4, "4D")
+        render_lines("3D Skor Atas", hasil_3d_4, "Nilai_3D")
+        render_lines("2D Skor Atas", hasil_2d_4, "2D_Belakang")
 
-    with col_b:
-        st.markdown("### 2D Belakang Historis (4 baris)")
-        st.table(df_2d_hist)
-
-        show_simple_table("2D Skor Atas (4 baris)", hasil_2d_4, "2D_Belakang", "Skor_Total")
-        show_simple_table("2D Skor Tertinggi (2 baris)", hasil_2d_2, "2D_Belakang", "Skor_Total")
+    with col2:
+        render_historical_2d(df_2d_hist)
 
     st.divider()
-    st.header("Digit Posisi Teratas")
+    st.header("Analisa Terbaik")
 
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
-    c1.metric("As Teratas", as_top)
-    c2.metric("Kop Teratas", kop_top)
-    c3.metric("Kepala Teratas", kepala_top)
-    c4.metric("Ekor Teratas", ekor_top)
-    c5.metric("Digit Umum Teratas", digit_umum_teratas)
-    c6.metric("BBFS 6 Digit", bbfs6)
+    render_lines("4D Skor Tertinggi", hasil_4d_2, "4D")
+    render_lines("3D Skor Tertinggi", hasil_3d_2, "Nilai_3D")
+    render_lines("2D Skor Tertinggi", hasil_2d_2, "2D_Belakang")
 
     st.divider()
-    st.header("Skor per Posisi")
-    labels = ["As / Ribuan", "Kop / Ratusan", "Kepala / Puluhan", "Ekor / Satuan"]
-    cols = st.columns(4)
+    st.header("Digit Potensial")
 
-    for i, (label, df_pos) in enumerate(zip(labels, scores)):
-        with cols[i]:
-            st.markdown(f"**{label}**")
-            st.dataframe(df_pos.head(5), use_container_width=True, hide_index=True)
-
-    st.divider()
-    st.caption(
-        "Interpretasi: skor gabungan dibentuk dari Frekuensi Global (30%), "
-        "Frekuensi Recency (30%), dan Transisi Markov H ke H+1 (40%)."
-    )
+    st.write(f"AS POTENSIAL : {as_potensial}")
+    st.write(f"KOP POTENSIAL : {kop_potensial}")
+    st.write(f"KEPALA POTENSIAL : {kepala_potensial}")
+    st.write(f"EKOR POTENSIAL : {ekor_potensial}")
+    st.write(f"BBFS : {bbfs6}")
 
 
 if __name__ == "__main__":
