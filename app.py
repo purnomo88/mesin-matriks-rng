@@ -7,7 +7,7 @@ from collections import Counter
 from itertools import product
 from google.oauth2.service_account import Credentials
 
-st.set_page_config(page_title="GLM 6.0 | Calibrated Engine", layout="wide")
+st.set_page_config(page_title="GLM 7.0 | Gap Saturation Engine", layout="wide")
 
 SPREADSHEET_ID = "1prsu_8P8rxoKluOdbozwPrCdtJmGd9kBoqzfDnqVlVU"
 WORKSHEET_NAME = "DB"
@@ -19,7 +19,7 @@ SCOPES = [
 ]
 
 # ==========================================
-# 1. KONEKSI & WRANGLING DATA
+# 1. KONEKSI & DATABASE WRANGLING
 # ==========================================
 @st.cache_resource
 def get_gsheet_client():
@@ -29,7 +29,7 @@ def get_gsheet_client():
     )
     return gspread.authorize(creds)
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def load_and_clean_matrix():
     try:
         client = get_gsheet_client()
@@ -56,90 +56,81 @@ def load_and_clean_matrix():
     return df
 
 # ==========================================
-# 2. MESIN MATEMATIKA (KALIBRASI DINAMIS TREN)
+# 2. RUMUS STATISTIK BARU: GAP SATURATION ENGINE
 # ==========================================
-def hybrid_engine_order2(data_prev, data_target, baseline, recency_limit=60):
-    pairs = []
-    for i in range(len(data_prev)):
-        today = data_prev[i]
-        tomorrow = data_target[i]
-        if today and tomorrow:
-            pairs.append((today, tomorrow))
+def calculate_gap_saturation(data_target):
+    # Bersihkan dari nilai None
+    clean_data = [x for x in data_target if x is not None]
+    total_data = len(clean_data)
+    
+    if total_data < 10:
+        return None, None
+    
+    # 1. Hitung Jeda (Gap) Per Posisi Digit
+    pos_scores = []
+    for pos in range(4):
+        gap_dict = {str(d): 0 for d in range(10)}
+        
+        # Scan dari data terbaru (paling bawah/akhir list) mundur ke belakang
+        for d in map(str, range(10)):
+            gap = 0
+            found = False
+            for num in reversed(clean_data):
+                if num[pos] == d:
+                    found = True
+                    break
+                gap += 1
+            # Jika digit tidak pernah muncul sama sekali di sejarah, berikan gap maksimal
+            gap_dict[d] = gap if found else total_data
             
-    recent_pairs = pairs[-recency_limit:] if len(pairs) > recency_limit else pairs
-    
-    # A. Kalibrasi Posisi Depan (AS & KOP)
-    front_scores = []
-    for pos in range(2):
-        b_digit = baseline[pos]
-        m_counter = Counter([tom[pos] for tod, tom in pairs if tod[pos] == b_digit])
-        r_counter = Counter([tom[pos] for tod, tom in recent_pairs if tod[pos] == b_digit])
+        # Normalisasi skor berdasarkan besarnya gap (Semakin lama tidak keluar, skor semakin tinggi)
+        df_pos = pd.DataFrame(list(gap_dict.items()), columns=["Digit", "Skor"]).sort_values("Skor", ascending=False).reset_index(drop=True)
+        pos_scores.append(df_pos)
         
-        pos_scores = {str(d): 0.1 for d in range(10)}
+    # 2. Hitung Jeda (Gap) Blok 2D Belakang Utuh
+    gap_2d = {f"{i:02d}": 0 for i in range(100)}
+    for d2 in gap_2d.keys():
+        gap = 0
+        found = False
+        for num in reversed(clean_data):
+            if num[2:] == d2:
+                found = True
+                break
+            gap += 1
+        gap_2d[d2] = gap if found else total_data
         
-        tot_m = sum(m_counter.values())
-        if tot_m > 0:
-            for d, c in m_counter.items(): pos_scores[d] += (c / tot_m) * 0.4 # Markov 40%
-                
-        tot_r = sum(r_counter.values())
-        if tot_r > 0:
-            for d, c in r_counter.items(): pos_scores[d] += (c / tot_r) * 0.4 # Recency dinaikkan ke 40% (Lebih adaptif)
-            
-        df_pos = pd.DataFrame(list(pos_scores.items()), columns=["Digit", "Skor"]).sort_values("Skor", ascending=False)
-        front_scores.append(df_pos)
-        
-    # B. Kalibrasi Blok 2D Belakang (Order-2)
-    b_2d = baseline[2:]
-    m_2d_counter = Counter([tom[2:] for tod, tom in pairs if tod[2:] == b_2d])
-    r_2d_counter = Counter([tom[2:] for tod, tom in recent_pairs if tod[2:] == b_2d])
-    g_2d_counter = Counter([tom[2:] for tod, tom in pairs])
+    df_2d = pd.DataFrame(list(gap_2d.items()), columns=["2D", "Skor"]).sort_values("Skor", ascending=False).reset_index(drop=True)
     
-    tot_g_2d = sum(g_2d_counter.values())
-    tot_m_2d = sum(m_2d_counter.values())
-    tot_r_2d = sum(r_2d_counter.values())
+    # Cari 2D yang paling sering keluar secara umum pada hari tersebut (Untuk kolom Sejarah Asli)
+    hist_2d_counts = Counter([x[2:] for x in clean_data])
+    top_hist_2d = [item[0] for item in hist_2d_counts.most_common(6)]
     
-    scores_2d = {}
-    for i in range(100):
-        d2_str = f"{i:02d}"
-        s_g = (g_2d_counter[d2_str] / tot_g_2d) * 0.1 if tot_g_2d else 0.01 # Global diturunkan ke 10%
-        s_m = (m_2d_counter[d2_str] / tot_m_2d) * 0.4 if tot_m_2d else 0 # Markov 40%
-        s_r = (r_2d_counter[d2_str] / tot_r_2d) * 0.4 if tot_r_2d else 0 # Recency 40%
-        scores_2d[d2_str] = s_g + s_m + s_r + 0.01
-        
-    df_2d = pd.DataFrame(list(scores_2d.items()), columns=["2D", "Skor"]).sort_values("Skor", ascending=False)
-    
-    hist_2d_matches = [item[0] for item in m_2d_counter.most_common(6)]
-    
-    # C. Twin Filter
-    twin_count = sum(1 for _, tom in recent_pairs if tom[0] == tom[1])
-    twin_rate = twin_count / len(recent_pairs) if recent_pairs else 0
-    twin_multiplier = 1.4 if twin_rate > 0.15 else 0.5 
-    
-    return front_scores, df_2d, hist_2d_matches, twin_multiplier
+    return pos_scores, df_2d, top_hist_2d
 
-def generate_combinations(front_scores, df_2d, twin_multiplier, top_as=3, top_kop=3, top_2d=6):
-    as_list = front_scores[0].head(top_as).values.tolist()
-    kop_list = front_scores[1].head(top_kop).values.tolist()
-    belakang_list = df_2d.head(top_2d).values.tolist()
+def generate_combinations(pos_scores, df_2d, top_as=2, top_kop=2, top_2d=4):
+    as_list = pos_scores[0].head(top_as)["Digit"].tolist()
+    kop_list = pos_scores[1].head(top_kop)["Digit"].tolist()
+    belakang_list = df_2d.head(top_2d)["2D"].tolist()
     
     combos = []
-    for (d_as, s_as), (d_kop, s_kop), (d_2d, s_2d) in product(as_list, kop_list, belakang_list):
-        base_score = s_as + s_kop + s_2d
-        if d_as == d_kop:
-            base_score *= twin_multiplier
-            
+    for d_as, d_kop, d_2d in product(as_list, kop_list, belakang_list):
+        # Skor gabungan dari akumulasi jeda hari
+        s_as = pos_scores[0].set_index("Digit").loc[d_as, "Skor"]
+        s_kop = pos_scores[1].set_index("Digit").loc[d_kop, "Skor"]
+        s_2d = df_2d.set_index("2D").loc[d_2d, "Skor"]
+        
         combos.append({
             "4D": f"{d_as}{d_kop}{d_2d}",
             "3D": f"{d_kop}{d_2d}",
             "2D": d_2d,
-            "Total": base_score
+            "Total_Gap": int(s_as + s_kop + s_2d)
         })
         
-    df_c = pd.DataFrame(combos).sort_values("Total", ascending=False).reset_index(drop=True)
+    df_c = pd.DataFrame(combos).sort_values("Total_Gap", ascending=False).reset_index(drop=True)
     return df_c
 
 # ==========================================
-# 3. ANTARMUKA DASBOR
+# 3. ANTARMUKA DASBOR & OUTPUT COPY BLOG
 # ==========================================
 def main():
     st.title("Sistem ini ditenagai oleh model komputasi matematis kompleks yang mengekstraksi matriks transisi dari database historis berskala besar sebagai referensi probabilitas analitik, bukan sebagai jaminan kepastian mutlak.")
@@ -152,57 +143,48 @@ def main():
 
     hari_list = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"]
     
-    st.markdown("### 🎯 Analisis Konfigurasi Hari")
-    colA, colB = st.columns(2)
-    with colA:
-        target_hari = st.selectbox("Pilih Target Hari:", hari_list, index=2)
+    st.markdown("### 🎯 Analisis Jeda Stagnasi Hari")
+    target_hari = st.selectbox("Pilih Target Hari Analisis:", hari_list, index=2)
     
-    idx_target = hari_list.index(target_hari)
-    prev_hari = hari_list[(idx_target - 1) % 7]
-    
-    with colB:
-        baseline = st.text_input(f"Masukkan Hasil {prev_hari} (Baseline H-1):", max_chars=4)
-        
-    if st.button("Jalankan Pemurnian GLM 6.0", type="primary"):
-        if len(baseline) != 4 or not baseline.isdigit():
-            st.error("Input eror. Masukkan tepat 4 digit.")
-            return
-            
-        data_prev = df_matrix[prev_hari].tolist()
+    if st.button("Jalankan Gap Saturation Engine", type="primary"):
         data_target = df_matrix[target_hari].tolist()
         
-        if target_hari == "Senin":
-            data_target = data_target[1:] + [""]
-            data_prev = data_prev[:len(data_target)]
+        with st.spinner("Menghitung titik jenuh kejenuhan angka..."):
+            pos_scores, df_2d, top_hist_2d = calculate_gap_saturation(data_target)
             
-        with st.spinner("Memproses Analisis Probabilitas Terkalibrasi..."):
-            front_scores, df_2d, hist_2d_str_list, twin_mult = hybrid_engine_order2(data_prev, data_target, baseline)
-            df_combos = generate_combinations(front_scores, df_2d, twin_mult)
+            if pos_scores is None:
+                st.error("Data pada hari tersebut terlalu sedikit untuk dianalisis.")
+                return
+                
+            df_combos = generate_combinations(pos_scores, df_2d)
             
-            as_line = f"{front_scores[0].iloc[0]['Digit']} & {front_scores[0].iloc[1]['Digit']}"
-            kop_line = f"{front_scores[1].iloc[0]['Digit']} & {front_scores[1].iloc[1]['Digit']}"
+            # Format Output 2 Line Bersih
+            as_line = f"{pos_scores[0].iloc[0]['Digit']} & {pos_scores[0].iloc[1]['Digit']}"
+            kop_line = f"{pos_scores[1].iloc[0]['Digit']} & {front_scores=None or pos_scores[1].iloc[1]['Digit']}"
             
             top_kepala = list(dict.fromkeys([x[0] for x in df_2d["2D"].head(6)]))
             top_ekor = list(dict.fromkeys([x[1] for x in df_2d["2D"].head(6)]))
             kep_line = f"{top_kepala[0]} & {top_kepala[1]}" if len(top_kepala)>1 else top_kepala[0]
             eko_line = f"{top_ekor[0]} & {top_ekor[1]}" if len(top_ekor)>1 else top_ekor[0]
             
+            # Ekstraksi Top 4 Line Mutlak
             list_4d = df_combos["4D"].head(4).tolist()
             list_3d = df_combos.drop_duplicates("3D")["3D"].head(4).tolist()
             list_2d = df_combos.drop_duplicates("2D")["2D"].head(4).tolist()
             
-            hist_2d_str = ", ".join(hist_2d_str_list) if hist_2d_str_list else "Belum ada sejarah utuh"
+            hist_2d_str = ", ".join(top_hist_2d) if top_hist_2d else "-"
             
+            # Kompresi BBFS 6 Digit dari penantian terlama
             all_digits = (
-                front_scores[0].head(2)["Digit"].tolist() + 
-                front_scores[1].head(2)["Digit"].tolist() + 
+                pos_scores[0].head(2)["Digit"].tolist() + 
+                pos_scores[1].head(2)["Digit"].tolist() + 
                 top_kepala[:2] + top_ekor[:2]
             )
             bbfs_counts = Counter(all_digits)
             bbfs6 = "".join([item[0] for item in bbfs_counts.most_common(6)])
-        
+            
         st.divider()
-        st.success("✅ Kalibrasi Sukses! Output Siap Disalin.")
+        st.success("✅ Analisis Selesai! Output Siap Disalin.")
         
         raw_text = f"""Analisis Posisi Angka:
 
