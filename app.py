@@ -7,7 +7,7 @@ from collections import Counter
 from itertools import product
 from google.oauth2.service_account import Credentials
 
-st.set_page_config(page_title="GLM 5.2 | Blog Output", layout="wide")
+st.set_page_config(page_title="GLM 6.0 | Advanced Engine", layout="wide")
 
 SPREADSHEET_ID = "1prsu_8P8rxoKluOdbozwPrCdtJmGd9kBoqzfDnqVlVU"
 WORKSHEET_NAME = "DB"
@@ -63,7 +63,7 @@ def load_data():
     return np.array(tokens, dtype=str)
 
 # ==========================================
-# 2. MESIN LOGIKA (TETAP SAMA - SANGAT AMPUH)
+# 2. MESIN LOGIKA (UPGRADE: JOINT PROBABILITY MATRIX)
 # ==========================================
 def build_pairs(history: np.ndarray):
     return list(zip(history[:-1], history[1:]))
@@ -92,6 +92,7 @@ def per_position_scores(history: np.ndarray, pairs, baseline: str, recency_halfl
             for d, c in markov_counter.items():
                 markov_freq[d] = c / total_markov
 
+        # Komposisi Mandiri
         composite = (0.3 * global_freq) + (0.3 * weighted_freq) + (0.4 * markov_freq)
         df_pos = pd.DataFrame({
             "Digit": range(10),
@@ -100,17 +101,16 @@ def per_position_scores(history: np.ndarray, pairs, baseline: str, recency_halfl
         scores.append(df_pos)
     return scores
 
-def full_2d_markov(pairs, target_2d, top_n=6):
-    counter = Counter()
-    for today, tomorrow in pairs:
-        if today[2:] == target_2d:
-            counter[tomorrow[2:]] += 1
-    return counter.most_common(top_n)
-
-def generate_strong_numbers(scores, top_k=(2, 2, 3, 3)):
+# FUNGSI BARU: Menghitung Sinergi antar Angka (Membunuh "Frankenstein Effect")
+def generate_strong_numbers(scores, history, top_k=(3, 3, 4, 4)):
     top_per_pos = []
     for i, df_pos in enumerate(scores):
         top_per_pos.append(list(df_pos.head(top_k[i])["Digit"].astype(str)))
+
+    # Kalkulasi database masa lalu untuk Joint Probability
+    n = len(history)
+    hist_2d = Counter([s[2:] for s in history])
+    hist_3d = Counter([s[1:] for s in history])
 
     combos = []
     for d1, d2, d3, d4 in product(*top_per_pos):
@@ -119,13 +119,31 @@ def generate_strong_numbers(scores, top_k=(2, 2, 3, 3)):
         s3 = scores[2].set_index("Digit").loc[int(d3), "Skor_Gabungan"]
         s4 = scores[3].set_index("Digit").loc[int(d4), "Skor_Gabungan"]
 
+        base_score = float(s1 + s2 + s3 + s4)
+        
+        c_2d = f"{d3}{d4}"
+        c_3d = f"{d2}{d3}{d4}"
+        
+        # Penalti/Bonus Sinergi: Jika 2D/3D ini sering keluar bersama, nilainya meledak.
+        synergy_2d = (hist_2d.get(c_2d, 0) / n) * 15  # Bobot pengganda
+        synergy_3d = (hist_3d.get(c_3d, 0) / n) * 25
+        
+        final_score = base_score * (1 + synergy_2d + synergy_3d)
+
         combos.append({
             "4D": f"{d1}{d2}{d3}{d4}",
-            "3D": f"{d2}{d3}{d4}",
-            "2D_Belakang": f"{d3}{d4}",
-            "Skor_Total": float(s1 + s2 + s3 + s4)
+            "3D": c_3d,
+            "2D_Belakang": c_2d,
+            "Skor_Total": final_score
         })
     return pd.DataFrame(combos).sort_values("Skor_Total", ascending=False).reset_index(drop=True)
+
+def full_2d_markov(pairs, target_2d, top_n=6):
+    counter = Counter()
+    for today, tomorrow in pairs:
+        if today[2:] == target_2d:
+            counter[tomorrow[2:]] += 1
+    return counter.most_common(top_n)
 
 def aggregate_digit_strength(scores):
     total = Counter()
@@ -135,7 +153,6 @@ def aggregate_digit_strength(scores):
     rows = [{"Digit": k, "Skor_Agregat": v} for k, v in total.items()]
     return pd.DataFrame(rows).sort_values("Skor_Agregat", ascending=False).reset_index(drop=True)
 
-# Fungsi Baru: Mengambil 2 teratas dan 1 Terkuat secara terpisah
 def extract_pos_info(scores, pos_index):
     vals = scores[pos_index].head(2)["Digit"].astype(int).astype(str).tolist()
     if len(vals) == 1:
@@ -143,10 +160,9 @@ def extract_pos_info(scores, pos_index):
     return f"{vals[0]} & {vals[1]}", vals[0]
 
 # ==========================================
-# 3. ANTARMUKA COPY-PASTE BLOG (SESUAI REQUEST)
+# 3. ANTARMUKA COPY-PASTE BLOG
 # ==========================================
 def main():
-    # Poin 1: Header diganti sesuai request
     st.title("Sistem ini ditenagai oleh model komputasi matematis kompleks yang mengekstraksi matriks transisi dari database historis berskala besar sebagai referensi probabilitas analitik, bukan sebagai jaminan kepastian mutlak.")
     
     try:
@@ -164,16 +180,17 @@ def main():
             st.error("Input ditolak. Masukkan tepat 4 digit angka.")
             return
 
-        with st.spinner("Memproses Matriks..."):
+        with st.spinner("Menjalankan Matriks Sinergi & Probabilitas Bersama..."):
             pairs = build_pairs(history)
             scores = per_position_scores(history, pairs, baseline)
-            strong_numbers = generate_strong_numbers(scores)
+            
+            # MEMANGGIL FUNGSI YANG SUDAH DI-UPGRADE
+            strong_numbers = generate_strong_numbers(scores, history)
 
             target_2d = baseline[2:]
             full_2d = full_2d_markov(pairs, target_2d, top_n=6)
             hist_2d_str = ", ".join([row[0] for row in full_2d]) if full_2d else "Belum ada sejarah utuh"
             
-            # Poin 4: Ekstraksi HANYA 4 Terbaik dan 1 Terkuat
             top_4d_list = strong_numbers["4D"].head(4).tolist()
             top_4d_terkuat = top_4d_list[0] if top_4d_list else "-"
             
@@ -183,22 +200,18 @@ def main():
             top_2d_list = strong_numbers.drop_duplicates("2D_Belakang")["2D_Belakang"].head(4).tolist()
             top_2d_terkuat = top_2d_list[0] if top_2d_list else "-"
 
-            # Poin 3: Ekstraksi Kombinasi & Terkuat per Posisi
             as_pot, as_kuat = extract_pos_info(scores, 0)
             kop_pot, kop_kuat = extract_pos_info(scores, 1)
             kep_pot, kep_kuat = extract_pos_info(scores, 2)
             eko_pot, eko_kuat = extract_pos_info(scores, 3)
 
-            # Poin 5: Ekstraksi BBFS
             bbfs6 = "".join(aggregate_digit_strength(scores).head(6)["Digit"].astype(str).tolist())
 
         st.divider()
         st.success("✅ Output siap disalin ke Blog Anda!")
         
-        # Poin 2: Tampilan HTML dihapus. Langsung ke kotak teks mentah.
         st.info("Arahkan kursor ke pojok kanan atas kotak di bawah ini, lalu klik ikon 'Copy'.")
         
-        # PENYUSUNAN FORMAT TEKS PERSIS SEPERTI REQUEST DI TAMPILAN.TXT
         raw_text = f"""Analisis Posisi Angka:
 
 AS\t\t: {as_pot}\tTERKUAT\t: {as_kuat}
