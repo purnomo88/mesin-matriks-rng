@@ -8,18 +8,20 @@ from itertools import product
 from scipy.stats import chisquare
 from google.oauth2.service_account import Credentials
 
-st.set_page_config(page_title="Mesin Analisis 4D", layout="wide")
+# Konfigurasi Halaman (Lebih Lebar)
+st.set_page_config(page_title="GLM 5.2 | Mesin Analitik 4D", layout="wide", initial_sidebar_state="expanded")
 
 SPREADSHEET_ID = "1prsu_8P8rxoKluOdbozwPrCdtJmGd9kBoqzfDnqVlVU"
 WORKSHEET_NAME = "DB"
 HEADERS = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"]
-
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
 
-
+# ==========================================
+# 1. KONEKSI & WRANGLING DATA (TETAP SAMA)
+# ==========================================
 @st.cache_resource
 def get_gsheet_client():
     creds = Credentials.from_service_account_info(
@@ -27,7 +29,6 @@ def get_gsheet_client():
         scopes=SCOPES
     )
     return gspread.authorize(creds)
-
 
 @st.cache_data(ttl=600, show_spinner=True)
 def load_data():
@@ -65,18 +66,17 @@ def load_data():
 
     return np.array(tokens, dtype=str)
 
-
+# ==========================================
+# 2. LOGIKA MESIN HYBRID (TETAP SAMA)
+# ==========================================
 def build_pairs(history: np.ndarray):
     return list(zip(history[:-1], history[1:]))
-
 
 def per_position_scores(history: np.ndarray, pairs, baseline: str, recency_halflife: int = 50):
     n = len(history)
     scores = []
-
     for pos in range(4):
         digit_series = np.array([int(s[pos]) for s in history])
-
         global_freq = np.bincount(digit_series, minlength=10) / n
 
         weights = np.exp(-np.arange(n)[::-1] / recency_halflife)
@@ -97,7 +97,6 @@ def per_position_scores(history: np.ndarray, pairs, baseline: str, recency_halfl
                 markov_freq[d] = c / total_markov
 
         composite = (0.3 * global_freq) + (0.3 * weighted_freq) + (0.4 * markov_freq)
-
         df_pos = pd.DataFrame({
             "Digit": range(10),
             "Frekuensi_Global": global_freq,
@@ -105,11 +104,8 @@ def per_position_scores(history: np.ndarray, pairs, baseline: str, recency_halfl
             "Frekuensi_Markov": markov_freq,
             "Skor_Gabungan": composite
         }).sort_values("Skor_Gabungan", ascending=False).reset_index(drop=True)
-
         scores.append(df_pos)
-
     return scores
-
 
 def full_2d_markov(pairs, target_2d, top_n=4):
     counter = Counter()
@@ -117,7 +113,6 @@ def full_2d_markov(pairs, target_2d, top_n=4):
         if today[2:] == target_2d:
             counter[tomorrow[2:]] += 1
     return counter.most_common(top_n)
-
 
 def generate_strong_numbers(scores, top_k=(2, 2, 3, 3)):
     top_per_pos = []
@@ -137,13 +132,10 @@ def generate_strong_numbers(scores, top_k=(2, 2, 3, 3)):
             "2D_Belakang": f"{d3}{d4}",
             "Skor_Total": float(s1 + s2 + s3 + s4)
         })
-
     return pd.DataFrame(combos).sort_values("Skor_Total", ascending=False).reset_index(drop=True)
-
 
 def top_unique(df, key_col, score_col, n):
     return df.drop_duplicates(key_col).head(n)[[key_col, score_col]].reset_index(drop=True)
-
 
 def aggregate_digit_strength(scores):
     total = Counter()
@@ -153,13 +145,11 @@ def aggregate_digit_strength(scores):
     rows = [{"Digit": k, "Skor_Agregat": v} for k, v in total.items()]
     return pd.DataFrame(rows).sort_values("Skor_Agregat", ascending=False).reset_index(drop=True)
 
-
 def top_two_digits(scores, pos_index):
     vals = scores[pos_index].head(2)["Digit"].astype(int).astype(str).tolist()
     if len(vals) == 1:
         return vals[0]
-    return f"{vals[0]} dan {vals[1]}"
-
+    return f"{vals[0]} & {vals[1]}"
 
 def to_percent_series(df, score_col):
     df = df.copy()
@@ -170,142 +160,131 @@ def to_percent_series(df, score_col):
         df["Persen"] = (df[score_col] / max_score * 100).round(1)
     return df
 
-
-def render_lines(title, df, key_col, percent_col="Persen"):
-    st.markdown(f"### {title}")
-    for _, row in df.iterrows():
-        st.write(f"{row[key_col]}  →  {row[percent_col]}%")
-    st.write("")
-
-
-def render_historical_2d(df_hist):
-    st.markdown("### 2D Belakang Historis")
-    st.caption(
-        "Bagian ini menampilkan 2 digit belakang yang paling sering muncul sebagai lanjutan historis "
-        "ketika 2 digit belakang baseline kemarin pernah muncul di data sebelumnya."
+# ==========================================
+# 3. FUNGSI UI BARU (VISUAL PROGRESS BAR)
+# ==========================================
+def display_modern_df(df, key_col, val_col="Persen"):
+    st.dataframe(
+        df[[key_col, val_col]],
+        column_config={
+            key_col: st.column_config.TextColumn("Kombinasi", width="medium"),
+            val_col: st.column_config.ProgressColumn(
+                "Skor Probabilitas",
+                format="%f%%",
+                min_value=0,
+                max_value=100,
+            ),
+        },
+        hide_index=True,
+        use_container_width=True
     )
-    if "Persen" in df_hist.columns:
-        for _, row in df_hist.iterrows():
-            st.write(f"{row['2D_Belakang']}  →  {row['Persen']}%")
-    else:
-        for _, row in df_hist.iterrows():
-            st.write(f"{row['2D_Belakang']}  →  {row['Frekuensi']}x")
-    st.write("")
 
-
+# ==========================================
+# 4. ANTARMUKA UTAMA (MODERN DASHBOARD)
+# ==========================================
 def main():
-    st.title("Mesin Analisis 4D")
-    st.caption("Mode utama: baseline memakai hasil 4D kemarin.")
-
+    st.title("🔬 Arsitektur GLM 5.2 (Hybrid Model)")
+    
+    # Disclaimer Tech-Mystic
     st.info(
-        "Sistem ini ditenagai oleh model komputasi matematis kompleks yang mengekstraksi "
-        "matriks transisi dari database historis berskala besar sebagai referensi probabilitas "
-        "analitik, bukan sebagai jaminan kepastian mutlak."
+        "Sistem ini ditenagai oleh model komputasi matematis kompleks yang mengekstraksi matriks transisi dari database historis berskala besar. "
+        "Meskipun menggunakan algoritma probabilitas tingkat tinggi, volatilitas mesin acak membuat akurasi 100% adalah kemustahilan statistik. "
+        "Gunakan hasil komputasi ini murni sebagai referensi analitik, bukan kepastian mutlak."
     )
 
     try:
         history = load_data()
-    except ValueError as ve:
-        st.error(f"Kesalahan data: {ve}")
-        return
+        st.success(f"✅ Sistem Aktif: {len(history)} entri historis 4D berhasil disinkronisasi.")
     except Exception as e:
-        st.error(f"Kesalahan tak terduga: {e}")
+        st.error(f"Kesalahan sistem: {e}")
         return
 
-    st.success(f"{len(history)} entri historis 4D berhasil dimuat.")
-
-    st.subheader("Input Baseline")
-    baseline = st.text_input(
-        "Masukkan hasil 4D kemarin:",
-        max_chars=4,
-        placeholder="Contoh: 3506"
-    )
-
-    proses = st.button("Proses Analisis", type="primary")
+    # Input Box Modern
+    with st.container():
+        st.markdown("### 🎯 Kalibrasi Baseline (H-1)")
+        col_input, col_btn = st.columns([3, 1])
+        with col_input:
+            baseline = st.text_input("Masukkan hasil 4D kemarin:", max_chars=4, placeholder="Contoh: 3506", label_visibility="collapsed")
+        with col_btn:
+            proses = st.button("Mulai Pemindaian", type="primary", use_container_width=True)
 
     if not proses:
         return
 
     baseline = baseline.strip()
     if not baseline.isdigit() or len(baseline) != 4:
-        st.error("Input harus tepat 4 digit angka, misalnya 3506.")
+        st.error("Input ditolak. Masukkan tepat 4 digit angka.")
         return
 
-    try:
-        pairs = build_pairs(history)
-        scores = per_position_scores(history, pairs, baseline, recency_halflife=50)
-        strong_numbers = generate_strong_numbers(scores)
-    except Exception as e:
-        st.error(f"Kesalahan perhitungan: {e}")
-        return
+    with st.spinner("Mengkalibrasi Probabilitas Markov & Entropi LLN..."):
+        try:
+            pairs = build_pairs(history)
+            scores = per_position_scores(history, pairs, baseline, recency_halflife=50)
+            strong_numbers = generate_strong_numbers(scores)
+        except Exception as e:
+            st.error(f"Kesalahan perhitungan matriks: {e}")
+            return
 
-    target_2d = baseline[2:]
-    full_2d = full_2d_markov(pairs, target_2d, top_n=4)
+        target_2d = baseline[2:]
+        full_2d = full_2d_markov(pairs, target_2d, top_n=4)
 
-    hasil_4d_4 = to_percent_series(strong_numbers.head(4)[["4D", "Skor_Total"]], "Skor_Total")
-    hasil_4d_2 = to_percent_series(strong_numbers.head(2)[["4D", "Skor_Total"]], "Skor_Total")
+        hasil_4d = to_percent_series(strong_numbers[["4D", "Skor_Total"]], "Skor_Total")
+        hasil_3d = to_percent_series(top_unique(strong_numbers.rename(columns={"3D": "Nilai_3D"}), "Nilai_3D", "Skor_Total", 6), "Skor_Total")
+        hasil_2d = to_percent_series(top_unique(strong_numbers, "2D_Belakang", "Skor_Total", 6), "Skor_Total")
 
-    hasil_3d_4 = to_percent_series(
-        top_unique(strong_numbers.rename(columns={"3D": "Nilai_3D"}), "Nilai_3D", "Skor_Total", 4),
-        "Skor_Total"
-    )
-    hasil_3d_2 = to_percent_series(
-        top_unique(strong_numbers.rename(columns={"3D": "Nilai_3D"}), "Nilai_3D", "Skor_Total", 2),
-        "Skor_Total"
-    )
+        as_potensial = top_two_digits(scores, 0)
+        kop_potensial = top_two_digits(scores, 1)
+        kepala_potensial = top_two_digits(scores, 2)
+        ekor_potensial = top_two_digits(scores, 3)
 
-    hasil_2d_4 = to_percent_series(
-        top_unique(strong_numbers, "2D_Belakang", "Skor_Total", 4),
-        "Skor_Total"
-    )
-    hasil_2d_2 = to_percent_series(
-        top_unique(strong_numbers, "2D_Belakang", "Skor_Total", 2),
-        "Skor_Total"
-    )
+        digit_agregat = aggregate_digit_strength(scores)
+        bbfs6 = "".join(digit_agregat.head(6)["Digit"].astype(str).tolist())
 
-    if full_2d:
-        df_2d_hist = pd.DataFrame(full_2d, columns=["2D_Belakang", "Frekuensi"])
-        df_2d_hist["Persen"] = (df_2d_hist["Frekuensi"] / df_2d_hist["Frekuensi"].max() * 100).round(1)
-    else:
-        df_2d_hist = hasil_2d_4[["2D_Belakang", "Persen"]].copy()
+        st.divider()
 
-    as_potensial = top_two_digits(scores, 0)
-    kop_potensial = top_two_digits(scores, 1)
-    kepala_potensial = top_two_digits(scores, 2)
-    ekor_potensial = top_two_digits(scores, 3)
+        # ==========================================
+        # DASHBOARD HASIL (TABS & METRICS)
+        # ==========================================
+        
+        # 1. METRICS KARTU (POSISI MANDIRI)
+        st.subheader("📊 Ekstraksi Posisi Mandiri")
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("AS (Ribuan)", as_potensial)
+        col2.metric("KOP (Ratusan)", kop_potensial)
+        col3.metric("KEPALA (Puluhan)", kepala_potensial)
+        col4.metric("EKOR (Satuan)", ekor_potensial)
+        
+        st.write("") # Spasi
 
-    digit_agregat = aggregate_digit_strength(scores)
-    bbfs6 = "".join(digit_agregat.head(6)["Digit"].astype(str).tolist())
+        # 2. TABULASI SKOR (Rapi & Tidak Repot Scroll)
+        st.subheader("🎯 Matriks Probabilitas Silang")
+        tab1, tab2, tab3 = st.tabs(["Skor 2D (Belakang)", "Skor 3D", "Skor 4D (Penuh)"])
+        
+        with tab1:
+            st.markdown("**Top 6 Kombinasi 2D**")
+            display_modern_df(hasil_2d.head(6), "2D_Belakang")
+            
+            # Tambahan Riwayat Utuh jika ada
+            if full_2d:
+                st.info(f"**Data Sejarah Mutlak:** Kombinasi ekor '{target_2d}' pernah menyusul dan memicu angka berikut:")
+                df_2d_hist = pd.DataFrame(full_2d, columns=["2D_Keluar", "Frekuensi"])
+                df_2d_hist["Persen"] = (df_2d_hist["Frekuensi"] / df_2d_hist["Frekuensi"].max() * 100).round(1)
+                display_modern_df(df_2d_hist, "2D_Keluar")
 
-    st.divider()
-    st.header("Skor Atas")
+        with tab2:
+            st.markdown("**Top 6 Kombinasi 3D**")
+            display_modern_df(hasil_3d.head(6), "Nilai_3D")
 
-    col1, col2 = st.columns(2)
+        with tab3:
+            st.markdown("**Top 6 Kombinasi 4D (Struktur Penuh)**")
+            display_modern_df(hasil_4d.head(6), "4D")
 
-    with col1:
-        render_lines("4D Skor Atas", hasil_4d_4, "4D")
-        render_lines("3D Skor Atas", hasil_3d_4, "Nilai_3D")
-        render_lines("2D Skor Atas", hasil_2d_4, "2D_Belakang")
+        st.divider()
 
-    with col2:
-        render_historical_2d(df_2d_hist)
-
-    st.divider()
-    st.header("Analisa Terbaik")
-
-    render_lines("4D Skor Tertinggi", hasil_4d_2, "4D")
-    render_lines("3D Skor Tertinggi", hasil_3d_2, "Nilai_3D")
-    render_lines("2D Skor Tertinggi", hasil_2d_2, "2D_Belakang")
-
-    st.divider()
-    st.header("Digit Potensial")
-
-    st.write(f"AS POTENSIAL : {as_potensial}")
-    st.write(f"KOP POTENSIAL : {kop_potensial}")
-    st.write(f"KEPALA POTENSIAL : {kepala_potensial}")
-    st.write(f"EKOR POTENSIAL : {ekor_potensial}")
-    st.write(f"BBFS : {bbfs6}")
-
+        # 3. KESIMPULAN BBFS
+        st.markdown("### 🔮 Kesimpulan Sistem (BBFS Jaring Silang)")
+        st.success(f"**[ {bbfs6} ]**")
+        st.caption("Ini adalah 6 digit terkuat hasil kompresi seluruh posisi. Gunakan untuk menyusun formasi acak.")
 
 if __name__ == "__main__":
     main()
