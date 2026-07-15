@@ -7,7 +7,7 @@ from collections import Counter
 from itertools import product
 from google.oauth2.service_account import Credentials
 
-st.set_page_config(page_title="GLM 6.0 | Advanced Engine", layout="wide")
+st.set_page_config(page_title="GLM 5.2 | Pure Day-Pair Engine", layout="wide")
 
 SPREADSHEET_ID = "1prsu_8P8rxoKluOdbozwPrCdtJmGd9kBoqzfDnqVlVU"
 WORKSHEET_NAME = "DB"
@@ -19,7 +19,7 @@ SCOPES = [
 ]
 
 # ==========================================
-# 1. KONEKSI & DATA WRANGLING
+# 1. KONEKSI & WRANGLING DATA (STRUKTUR HARI TETAP UTUH)
 # ==========================================
 @st.cache_resource
 def get_gsheet_client():
@@ -30,187 +30,189 @@ def get_gsheet_client():
     return gspread.authorize(creds)
 
 @st.cache_data(ttl=600, show_spinner=False)
-def load_data():
+def load_and_clean_matrix():
     try:
         client = get_gsheet_client()
         ws = client.open_by_key(SPREADSHEET_ID).worksheet(WORKSHEET_NAME)
         rows = ws.get_all_values()
     except Exception as e:
-        raise ValueError(f"Gagal membaca sheet DB: {e}")
-
+        raise ValueError(f"Gagal membaca data: {e}")
+    
     if not rows:
-        raise ValueError("Sheet DB kosong.")
-
+        raise ValueError("Database kosong.")
+        
     data_rows = rows[1:] if len(rows) > 1 else []
     normalized_rows = [(row + [""] * 7)[:7] for row in data_rows]
-    df_sheet = pd.DataFrame(normalized_rows, columns=HEADERS)
+    df = pd.DataFrame(normalized_rows, columns=HEADERS)
+    
+    def clean_4d(val):
+        if pd.isna(val): return None
+        s = re.sub(r"[^0-9]", "", str(val).strip())
+        return s if len(s) == 4 else None
 
-    cells = []
-    for row in df_sheet.itertuples(index=False):
-        for val in row:
-            sval = str(val).strip()
-            if sval:
-                cells.append(sval)
-
-    flat_text = " ".join(cells)
-    tokens = re.findall(r"\d{4}", flat_text)
-
-    if len(tokens) < 10:
-        digits = re.findall(r"\d", flat_text)
-        usable = len(digits) - (len(digits) % 4)
-        tokens = ["".join(digits[i:i + 4]) for i in range(0, usable, 4)]
-
-    return np.array(tokens, dtype=str)
+    for col in df.columns:
+        df[col] = df[col].apply(clean_4d)
+        
+    return df
 
 # ==========================================
-# 2. MESIN LOGIKA (UPGRADE: JOINT PROBABILITY MATRIX)
+# 2. CORE MATHEMATICS (RESTORED TO V4.2 HYBRID)
 # ==========================================
-def build_pairs(history: np.ndarray):
-    return list(zip(history[:-1], history[1:]))
-
-def per_position_scores(history: np.ndarray, pairs, baseline: str, recency_halflife: int = 50):
-    n = len(history)
+def per_position_hybrid(data_prev, data_target, baseline, target_hari, recency_limit=60):
+    # Filter data valid berpasangan
+    pairs = []
+    for i in range(len(data_prev)):
+        today = data_prev[i]
+        tomorrow = data_target[i]
+        if target_hari == "Senin" and i + 1 < len(data_prev):
+            tomorrow = data_target[i+1]
+        if today and tomorrow:
+            pairs.append((today, tomorrow))
+            
+    # Ambil tren terbaru (Recency Window) untuk mengunci pergeseran aktif
+    recent_pairs = pairs[-recency_limit:] if len(pairs) > recency_limit else pairs
+    
     scores = []
+    # Jalankan kalkulasi per posisi (As, Kop, Kepala, Ekor)
     for pos in range(4):
-        digit_series = np.array([int(s[pos]) for s in history])
-        global_freq = np.bincount(digit_series, minlength=10) / n
-
-        weights = np.exp(-np.arange(n)[::-1] / recency_halflife)
-        weighted_freq = np.zeros(10)
-        for d in range(10):
-            weighted_freq[d] = weights[digit_series == d].sum()
-        weighted_freq = weighted_freq / weighted_freq.sum()
-
+        b_digit = baseline[pos]
+        
+        # 1. Markov Bersyarat Hari Spesifik
         markov_counter = Counter()
         for today, tomorrow in pairs:
-            if today[pos] == baseline[pos]:
-                markov_counter[int(tomorrow[pos])] += 1
-
-        total_markov = sum(markov_counter.values())
-        markov_freq = np.zeros(10)
-        if total_markov > 0:
+            if today[pos] == b_digit:
+                markov_counter[tomorrow[pos]] += 1
+                
+        # 2. Recency Counter (Tren 60 minggu terakhir pada hari spesifik)
+        recency_counter = Counter()
+        for today, tomorrow in recent_pairs:
+            if today[pos] == b_digit:
+                recency_counter[tomorrow[pos]] += 1
+                
+        # 3. Stagnation Offset (Toleransi tarikan matematika +3 / -2 / Tetap)
+        b_int = int(b_digit)
+        offsets = [str((b_int + 3) % 10), str((b_int - 2) % 10), b_digit]
+        
+        # Penggabungan Skor tanpa sistem Multiplier Sinergi palsu
+        pos_scores = Counter()
+        # Isi semua digit 0-9 dengan bobot dasar yang merata
+        for d in map(str, range(10)):
+            pos_scores[d] = 0.1
+            
+        # Tambahkan bobot Markov (Kekuatan Sejarah)
+        total_m = sum(markov_counter.values())
+        if total_m > 0:
             for d, c in markov_counter.items():
-                markov_freq[d] = c / total_markov
-
-        # Komposisi Mandiri
-        composite = (0.3 * global_freq) + (0.3 * weighted_freq) + (0.4 * markov_freq)
-        df_pos = pd.DataFrame({
-            "Digit": range(10),
-            "Skor_Gabungan": composite
-        }).sort_values("Skor_Gabungan", ascending=False).reset_index(drop=True)
+                pos_scores[d] += (c / total_m) * 0.5
+                
+        # Tambahkan bobot Recency (Kekuatan Tren Baru)
+        total_r = sum(recency_counter.values())
+        if total_r > 0:
+            for d, c in recency_counter.items():
+                pos_scores[d] += (c / total_r) * 0.3
+                
+        # Tambahkan bobot Toleransi Stagnasi
+        for d in offsets:
+            pos_scores[d] += 0.1
+            
+        df_pos = pd.DataFrame(pos_scores.most_common(10), columns=["Digit", "Skor"])
         scores.append(df_pos)
-    return scores
+        
+    return scores, pairs
 
-# FUNGSI BARU: Menghitung Sinergi antar Angka (Membunuh "Frankenstein Effect")
-def generate_strong_numbers(scores, history, top_k=(3, 3, 4, 4)):
-    top_per_pos = []
-    for i, df_pos in enumerate(scores):
-        top_per_pos.append(list(df_pos.head(top_k[i])["Digit"].astype(str)))
-
-    # Kalkulasi database masa lalu untuk Joint Probability
-    n = len(history)
-    hist_2d = Counter([s[2:] for s in history])
-    hist_3d = Counter([s[1:] for s in history])
-
+def generate_output_matrix(scores, pairs, baseline, top_k=(2, 2, 3, 3)):
+    top_per_pos = [list(scores[i].head(top_k[i])["Digit"].tolist()) for i in range(4)]
+    
+    # 2D Sejarah Utuh (Markov Lurus Bersyarat)
+    b_2d = baseline[2:]
+    hist_2d_counter = Counter()
+    for today, tomorrow in pairs:
+        if today[2:] == b_2d:
+            hist_2d_counter[tomorrow[2:]] += 1
+    full_2d_matches = [item[0] for item in hist_2d_counter.most_common(6)]
+    
+    # Jaring Kombinasi
     combos = []
     for d1, d2, d3, d4 in product(*top_per_pos):
-        s1 = scores[0].set_index("Digit").loc[int(d1), "Skor_Gabungan"]
-        s2 = scores[1].set_index("Digit").loc[int(d2), "Skor_Gabungan"]
-        s3 = scores[2].set_index("Digit").loc[int(d3), "Skor_Gabungan"]
-        s4 = scores[3].set_index("Digit").loc[int(d4), "Skor_Gabungan"]
-
-        base_score = float(s1 + s2 + s3 + s4)
+        s1 = scores[0].set_index("Digit").loc[d1, "Skor"]
+        s2 = scores[1].set_index("Digit").loc[d2, "Skor"]
+        s3 = scores[2].set_index("Digit").loc[d3, "Skor"]
+        s4 = scores[3].set_index("Digit").loc[d4, "Skor"]
         
-        c_2d = f"{d3}{d4}"
-        c_3d = f"{d2}{d3}{d4}"
-        
-        # Penalti/Bonus Sinergi: Jika 2D/3D ini sering keluar bersama, nilainya meledak.
-        synergy_2d = (hist_2d.get(c_2d, 0) / n) * 15  # Bobot pengganda
-        synergy_3d = (hist_3d.get(c_3d, 0) / n) * 25
-        
-        final_score = base_score * (1 + synergy_2d + synergy_3d)
-
         combos.append({
             "4D": f"{d1}{d2}{d3}{d4}",
-            "3D": c_3d,
-            "2D_Belakang": c_2d,
-            "Skor_Total": final_score
+            "3D": f"{d2}{d3}{d4}",
+            "2D": f"{d3}{d4}",
+            "Total": s1 + s2 + s3 + s4
         })
-    return pd.DataFrame(combos).sort_values("Skor_Total", ascending=False).reset_index(drop=True)
-
-def full_2d_markov(pairs, target_2d, top_n=6):
-    counter = Counter()
-    for today, tomorrow in pairs:
-        if today[2:] == target_2d:
-            counter[tomorrow[2:]] += 1
-    return counter.most_common(top_n)
-
-def aggregate_digit_strength(scores):
-    total = Counter()
-    for df_pos in scores:
-        for _, row in df_pos.iterrows():
-            total[str(int(row["Digit"]))] += float(row["Skor_Gabungan"])
-    rows = [{"Digit": k, "Skor_Agregat": v} for k, v in total.items()]
-    return pd.DataFrame(rows).sort_values("Skor_Agregat", ascending=False).reset_index(drop=True)
-
-def extract_pos_info(scores, pos_index):
-    vals = scores[pos_index].head(2)["Digit"].astype(int).astype(str).tolist()
-    if len(vals) == 1:
-        return vals[0], vals[0]
-    return f"{vals[0]} & {vals[1]}", vals[0]
+        
+    df_c = pd.DataFrame(combos).sort_values("Total", ascending=False).reset_index(drop=True)
+    return df_c, full_2d_matches
 
 # ==========================================
-# 3. ANTARMUKA COPY-PASTE BLOG
+# 3. ANTARMUKA DASBOR (COMPACT & PURE TEXT)
 # ==========================================
 def main():
     st.title("Sistem ini ditenagai oleh model komputasi matematis kompleks yang mengekstraksi matriks transisi dari database historis berskala besar sebagai referensi probabilitas analitik, bukan sebagai jaminan kepastian mutlak.")
     
     try:
-        with st.spinner("Menghubungkan ke Database..."):
-            history = load_data()
+        df_matrix = load_and_clean_matrix()
     except Exception as e:
-        st.error(f"Kesalahan sistem: {e}")
+        st.error(f"Gagal sinkronisasi data: {e}")
         return
 
-    st.markdown("### 🎯 Kalibrasi Baseline (H-1)")
-    baseline = st.text_input("Masukkan hasil 4D kemarin:", max_chars=4, placeholder="Contoh: 3506")
+    hari_list = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"]
     
-    if st.button("Generate Teks Blog", type="primary"):
-        if not baseline.isdigit() or len(baseline) != 4:
-            st.error("Input ditolak. Masukkan tepat 4 digit angka.")
-            return
-
-        with st.spinner("Menjalankan Matriks Sinergi & Probabilitas Bersama..."):
-            pairs = build_pairs(history)
-            scores = per_position_scores(history, pairs, baseline)
-            
-            # MEMANGGIL FUNGSI YANG SUDAH DI-UPGRADE
-            strong_numbers = generate_strong_numbers(scores, history)
-
-            target_2d = baseline[2:]
-            full_2d = full_2d_markov(pairs, target_2d, top_n=6)
-            hist_2d_str = ", ".join([row[0] for row in full_2d]) if full_2d else "Belum ada sejarah utuh"
-            
-            top_4d_list = strong_numbers["4D"].head(4).tolist()
-            top_4d_terkuat = top_4d_list[0] if top_4d_list else "-"
-            
-            top_3d_list = strong_numbers.drop_duplicates("3D")["3D"].head(4).tolist()
-            top_3d_terkuat = top_3d_list[0] if top_3d_list else "-"
-            
-            top_2d_list = strong_numbers.drop_duplicates("2D_Belakang")["2D_Belakang"].head(4).tolist()
-            top_2d_terkuat = top_2d_list[0] if top_2d_list else "-"
-
-            as_pot, as_kuat = extract_pos_info(scores, 0)
-            kop_pot, kop_kuat = extract_pos_info(scores, 1)
-            kep_pot, kep_kuat = extract_pos_info(scores, 2)
-            eko_pot, eko_kuat = extract_pos_info(scores, 3)
-
-            bbfs6 = "".join(aggregate_digit_strength(scores).head(6)["Digit"].astype(str).tolist())
-
-        st.divider()
-        st.success("✅ Output siap disalin ke Blog Anda!")
+    st.markdown("### 🎯 Analisis Konfigurasi Hari")
+    colA, colB = st.columns(2)
+    with colA:
+        target_hari = st.selectbox("Pilih Target Hari:", hari_list, index=2)
+    
+    idx_target = hari_list.index(target_hari)
+    prev_hari = hari_list[(idx_target - 1) % 7]
+    
+    with colB:
+        baseline = st.text_input(f"Masukkan Hasil {prev_hari} (Baseline H-1):", max_chars=4)
         
-        st.info("Arahkan kursor ke pojok kanan atas kotak di bawah ini, lalu klik ikon 'Copy'.")
+    if st.button("Jalankan Pemurnian Matriks Hari", type="primary"):
+        if len(baseline) != 4 or not baseline.isdigit():
+            st.error("Input eror. Masukkan tepat 4 digit.")
+            return
+            
+        data_prev = df_matrix[prev_hari].tolist()
+        data_target = df_matrix[target_hari].tolist()
+        
+        # Eksekusi Rumus Murni Kembali
+        scores, pairs = per_position_hybrid(data_prev, data_target, baseline, target_hari)
+        df_combos, full_2d_matches = generate_output_matrix(scores, pairs, baseline)
+        
+        # Ekstraksi Data Posisi
+        def get_line(df_pos):
+            top2 = df_pos.head(2)["Digit"].tolist()
+            return f"{top2[0]} & {top2[1]}", top2[0]
+            
+        as_pot, as_kuat = get_line(scores[0])
+        kop_pot, kop_kuat = get_line(scores[1])
+        kep_pot, kep_kuat = get_line(scores[2])
+        eko_pot, eko_kuat = get_line(scores[3])
+        
+        # Ekstraksi BBFS
+        all_digits = []
+        for df_pos in scores:
+            all_digits.extend(df_pos.head(3)["Digit"].tolist())
+        bbfs_counts = Counter(all_digits)
+        bbfs6 = "".join([item[0] for item in bbfs_counts.most_common(6)])
+        
+        # Ekstraksi Top Line
+        list_4d = df_combos["4D"].head(4).tolist()
+        list_3d = df_combos.drop_duplicates("3D")["3D"].head(4).tolist()
+        list_2d = df_combos.drop_duplicates("2D")["2D"].head(4).tolist()
+        
+        hist_2d_str = ", ".join(full_2d_matches) if full_2d_matches else "Belum ada sejarah utuh"
+        
+        st.divider()
+        st.success("✅ Output Murni Siap Disalin!")
+        st.info("Klik ikon 'Copy' di pojok kanan atas boks di bawah ini untuk langsung ditempel ke Blog.")
         
         raw_text = f"""Analisis Posisi Angka:
 
@@ -221,19 +223,19 @@ EKOR\t: {eko_pot}\tTERKUAT\t: {eko_kuat}
 
 Matriks Jaring Silang:
 
-Set 4D Terbaik\t: {", ".join(top_4d_list)}
-Set 4D Terkuat\t: {top_4d_terkuat}
+Set 4D Terbaik\t: {", ".join(list_4d)}
+Set 4D Terkuat\t: {list_4d[0]}
 
-Set 3D Terbaik\t: {", ".join(top_3d_list)}
-Set 3D Terkuat\t: {top_3d_terkuat}
+Set 3D Terbaik\t: {", ".join(list_3d)}
+Set 3D Terkuat\t: {list_3d[0]}
 
-Set 2D Belakang Terbaik\t: {", ".join(top_2d_list)}
-Set 2D Belakang Terkuat\t: {top_2d_terkuat}
+Set 2D Belakang Terbaik\t: {", ".join(list_2d)}
+Set 2D Belakang Terkuat\t: {list_2d[0]}
 
 Transisi Sejarah 2D Asli\t: {hist_2d_str}
 
 Jaring Silang (6 Digit) BBFS : [ {bbfs6} ]"""
-        
+
         st.code(raw_text, language="text")
 
 if __name__ == "__main__":
