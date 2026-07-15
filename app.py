@@ -7,7 +7,7 @@ from collections import Counter
 from itertools import product
 from google.oauth2.service_account import Credentials
 
-st.set_page_config(page_title="GLM 5.2 | Copy-Paste Mode", layout="wide")
+st.set_page_config(page_title="GLM 5.2 | Blog Output", layout="wide")
 
 SPREADSHEET_ID = "1prsu_8P8rxoKluOdbozwPrCdtJmGd9kBoqzfDnqVlVU"
 WORKSHEET_NAME = "DB"
@@ -135,15 +135,19 @@ def aggregate_digit_strength(scores):
     rows = [{"Digit": k, "Skor_Agregat": v} for k, v in total.items()]
     return pd.DataFrame(rows).sort_values("Skor_Agregat", ascending=False).reset_index(drop=True)
 
-def top_two_digits(scores, pos_index):
+# Fungsi Baru: Mengambil 2 teratas dan 1 Terkuat secara terpisah
+def extract_pos_info(scores, pos_index):
     vals = scores[pos_index].head(2)["Digit"].astype(int).astype(str).tolist()
-    return f"{vals[0]} & {vals[1]}" if len(vals) > 1 else vals[0]
+    if len(vals) == 1:
+        return vals[0], vals[0]
+    return f"{vals[0]} & {vals[1]}", vals[0]
 
 # ==========================================
-# 3. ANTARMUKA COPY-PASTE BLOG
+# 3. ANTARMUKA COPY-PASTE BLOG (SESUAI REQUEST)
 # ==========================================
 def main():
-    st.title("⚙️ GLM 5.2 (Blog Output Mode)")
+    # Poin 1: Header diganti sesuai request
+    st.title("Sistem ini ditenagai oleh model komputasi matematis kompleks yang mengekstraksi matriks transisi dari database historis berskala besar sebagai referensi probabilitas analitik, bukan sebagai jaminan kepastian mutlak.")
     
     try:
         with st.spinner("Menghubungkan ke Database..."):
@@ -165,70 +169,57 @@ def main():
             scores = per_position_scores(history, pairs, baseline)
             strong_numbers = generate_strong_numbers(scores)
 
-            # Tarik daftar list murni tanpa persentase
             target_2d = baseline[2:]
             full_2d = full_2d_markov(pairs, target_2d, top_n=6)
-            
-            top_4d = strong_numbers["4D"].head(8).tolist()
-            top_3d = strong_numbers.drop_duplicates("3D")["3D"].head(8).tolist()
-            top_2d = strong_numbers.drop_duplicates("2D_Belakang")["2D_Belakang"].head(8).tolist()
-            
             hist_2d_str = ", ".join([row[0] for row in full_2d]) if full_2d else "Belum ada sejarah utuh"
+            
+            # Poin 4: Ekstraksi HANYA 4 Terbaik dan 1 Terkuat
+            top_4d_list = strong_numbers["4D"].head(4).tolist()
+            top_4d_terkuat = top_4d_list[0] if top_4d_list else "-"
+            
+            top_3d_list = strong_numbers.drop_duplicates("3D")["3D"].head(4).tolist()
+            top_3d_terkuat = top_3d_list[0] if top_3d_list else "-"
+            
+            top_2d_list = strong_numbers.drop_duplicates("2D_Belakang")["2D_Belakang"].head(4).tolist()
+            top_2d_terkuat = top_2d_list[0] if top_2d_list else "-"
 
-            as_pot = top_two_digits(scores, 0)
-            kop_pot = top_two_digits(scores, 1)
-            kep_pot = top_two_digits(scores, 2)
-            eko_pot = top_two_digits(scores, 3)
+            # Poin 3: Ekstraksi Kombinasi & Terkuat per Posisi
+            as_pot, as_kuat = extract_pos_info(scores, 0)
+            kop_pot, kop_kuat = extract_pos_info(scores, 1)
+            kep_pot, kep_kuat = extract_pos_info(scores, 2)
+            eko_pot, eko_kuat = extract_pos_info(scores, 3)
 
+            # Poin 5: Ekstraksi BBFS
             bbfs6 = "".join(aggregate_digit_strength(scores).head(6)["Digit"].astype(str).tolist())
 
         st.divider()
         st.success("✅ Output siap disalin ke Blog Anda!")
-
-        # ----------------------------------------
-        # VISUAL HTML COPY (Menyimpan format bold)
-        # ----------------------------------------
-        st.subheader("📋 Tampilan Blog (Blok dan Copy Area Ini)")
         
-        st.markdown(f"""
-**🔍 Analisis Posisi Angka (GLM 5.2):**
-* **AS (Ribuan):** {as_pot}
-* **KOP (Ratusan):** {kop_pot}
-* **KEPALA (Puluhan):** {kep_pot}
-* **EKOR (Satuan):** {eko_pot}
-
-**🎯 Matriks Jaring Silang:**
-* **Set 4D:** {", ".join(top_4d)}
-* **Set 3D:** {", ".join(top_3d)}
-* **Set 2D Belakang:** {", ".join(top_2d)}
-* **Transisi Sejarah 2D Asli:** {hist_2d_str}
-
-**🔮 Kesimpulan BBFS (6 Digit):**
-**[ {bbfs6} ]**
-        """)
-
-        st.divider()
-        
-        # ----------------------------------------
-        # TEXT RAW (Kotak Salin Otomatis)
-        # ----------------------------------------
-        st.subheader("📦 Alternatif: Copy Teks Mentah")
+        # Poin 2: Tampilan HTML dihapus. Langsung ke kotak teks mentah.
         st.info("Arahkan kursor ke pojok kanan atas kotak di bawah ini, lalu klik ikon 'Copy'.")
         
-        raw_text = f"""🔍 Analisis Posisi Angka (GLM 5.2):
-- AS (Ribuan): {as_pot}
-- KOP (Ratusan): {kop_pot}
-- KEPALA (Puluhan): {kep_pot}
-- EKOR (Satuan): {eko_pot}
+        # PENYUSUNAN FORMAT TEKS PERSIS SEPERTI REQUEST DI TAMPILAN.TXT
+        raw_text = f"""Analisis Posisi Angka:
 
-🎯 Matriks Jaring Silang:
-- Set 4D: {", ".join(top_4d)}
-- Set 3D: {", ".join(top_3d)}
-- Set 2D Belakang: {", ".join(top_2d)}
-- Transisi Sejarah 2D Asli: {hist_2d_str}
+AS\t\t: {as_pot}\tTERKUAT\t: {as_kuat}
+KOP\t\t: {kop_pot}\tTERKUAT\t: {kop_kuat}
+KEPALA\t: {kep_pot}\tTERKUAT\t: {kep_kuat}
+EKOR\t: {eko_pot}\tTERKUAT\t: {eko_kuat}
 
-🔮 Kesimpulan BBFS (6 Digit):
-[ {bbfs6} ]"""
+Matriks Jaring Silang:
+
+Set 4D Terbaik\t: {", ".join(top_4d_list)}
+Set 4D Terkuat\t: {top_4d_terkuat}
+
+Set 3D Terbaik\t: {", ".join(top_3d_list)}
+Set 3D Terkuat\t: {top_3d_terkuat}
+
+Set 2D Belakang Terbaik\t: {", ".join(top_2d_list)}
+Set 2D Belakang Terkuat\t: {top_2d_terkuat}
+
+Transisi Sejarah 2D Asli\t: {hist_2d_str}
+
+Jaring Silang (6 Digit) BBFS : [ {bbfs6} ]"""
         
         st.code(raw_text, language="text")
 
