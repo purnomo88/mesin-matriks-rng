@@ -7,7 +7,7 @@ from collections import Counter
 from itertools import product
 from google.oauth2.service_account import Credentials
 
-st.set_page_config(page_title="GLM 6.0 | Advanced Markov Order-2", layout="wide")
+st.set_page_config(page_title="GLM 6.0 | Calibrated Engine", layout="wide")
 
 SPREADSHEET_ID = "1prsu_8P8rxoKluOdbozwPrCdtJmGd9kBoqzfDnqVlVU"
 WORKSHEET_NAME = "DB"
@@ -56,7 +56,7 @@ def load_and_clean_matrix():
     return df
 
 # ==========================================
-# 2. MESIN MATEMATIKA (MARKOV ORDER-2 & TWIN FILTER)
+# 2. MESIN MATEMATIKA (KALIBRASI DINAMIS TREN)
 # ==========================================
 def hybrid_engine_order2(data_prev, data_target, baseline, recency_limit=60):
     pairs = []
@@ -68,9 +68,7 @@ def hybrid_engine_order2(data_prev, data_target, baseline, recency_limit=60):
             
     recent_pairs = pairs[-recency_limit:] if len(pairs) > recency_limit else pairs
     
-    # ---------------------------------------------------------
-    # A. Kalkulasi Posisi Depan (AS & KOP) secara Independen
-    # ---------------------------------------------------------
+    # A. Kalibrasi Posisi Depan (AS & KOP)
     front_scores = []
     for pos in range(2):
         b_digit = baseline[pos]
@@ -81,18 +79,16 @@ def hybrid_engine_order2(data_prev, data_target, baseline, recency_limit=60):
         
         tot_m = sum(m_counter.values())
         if tot_m > 0:
-            for d, c in m_counter.items(): pos_scores[d] += (c / tot_m) * 0.4
+            for d, c in m_counter.items(): pos_scores[d] += (c / tot_m) * 0.4 # Markov 40%
                 
         tot_r = sum(r_counter.values())
         if tot_r > 0:
-            for d, c in r_counter.items(): pos_scores[d] += (c / tot_r) * 0.3
+            for d, c in r_counter.items(): pos_scores[d] += (c / tot_r) * 0.4 # Recency dinaikkan ke 40% (Lebih adaptif)
             
         df_pos = pd.DataFrame(list(pos_scores.items()), columns=["Digit", "Skor"]).sort_values("Skor", ascending=False)
         front_scores.append(df_pos)
         
-    # ---------------------------------------------------------
-    # B. Kalkulasi Blok 2D Belakang (Order-2)
-    # ---------------------------------------------------------
+    # B. Kalibrasi Blok 2D Belakang (Order-2)
     b_2d = baseline[2:]
     m_2d_counter = Counter([tom[2:] for tod, tom in pairs if tod[2:] == b_2d])
     r_2d_counter = Counter([tom[2:] for tod, tom in recent_pairs if tod[2:] == b_2d])
@@ -105,23 +101,19 @@ def hybrid_engine_order2(data_prev, data_target, baseline, recency_limit=60):
     scores_2d = {}
     for i in range(100):
         d2_str = f"{i:02d}"
-        s_g = (g_2d_counter[d2_str] / tot_g_2d) * 0.2 if tot_g_2d else 0.01
-        s_m = (m_2d_counter[d2_str] / tot_m_2d) * 0.5 if tot_m_2d else 0
-        s_r = (r_2d_counter[d2_str] / tot_r_2d) * 0.3 if tot_r_2d else 0
-        scores_2d[d2_str] = s_g + s_m + s_r + 0.01 # Base probability
+        s_g = (g_2d_counter[d2_str] / tot_g_2d) * 0.1 if tot_g_2d else 0.01 # Global diturunkan ke 10%
+        s_m = (m_2d_counter[d2_str] / tot_m_2d) * 0.4 if tot_m_2d else 0 # Markov 40%
+        s_r = (r_2d_counter[d2_str] / tot_r_2d) * 0.4 if tot_r_2d else 0 # Recency 40%
+        scores_2d[d2_str] = s_g + s_m + s_r + 0.01
         
     df_2d = pd.DataFrame(list(scores_2d.items()), columns=["2D", "Skor"]).sort_values("Skor", ascending=False)
     
-    # Deteksi Sejarah Lurus 2D
     hist_2d_matches = [item[0] for item in m_2d_counter.most_common(6)]
     
-    # ---------------------------------------------------------
-    # C. Deteksi Twin-Symmetry (Angka Kembar)
-    # ---------------------------------------------------------
+    # C. Twin Filter
     twin_count = sum(1 for _, tom in recent_pairs if tom[0] == tom[1])
     twin_rate = twin_count / len(recent_pairs) if recent_pairs else 0
-    # Jika twin_rate kecil (jarang kembar), penalti angka kembar. Jika besar, boost.
-    twin_multiplier = 1.5 if twin_rate > 0.15 else 0.4 
+    twin_multiplier = 1.4 if twin_rate > 0.15 else 0.5 
     
     return front_scores, df_2d, hist_2d_matches, twin_multiplier
 
@@ -133,8 +125,6 @@ def generate_combinations(front_scores, df_2d, twin_multiplier, top_as=3, top_ko
     combos = []
     for (d_as, s_as), (d_kop, s_kop), (d_2d, s_2d) in product(as_list, kop_list, belakang_list):
         base_score = s_as + s_kop + s_2d
-        
-        # Terapkan filter kembar (Mencegah stuck di 99xx)
         if d_as == d_kop:
             base_score *= twin_multiplier
             
@@ -149,7 +139,7 @@ def generate_combinations(front_scores, df_2d, twin_multiplier, top_as=3, top_ko
     return df_c
 
 # ==========================================
-# 3. ANTARMUKA COPY-PASTE BLOG
+# 3. ANTARMUKA DASBOR
 # ==========================================
 def main():
     st.title("Sistem ini ditenagai oleh model komputasi matematis kompleks yang mengekstraksi matriks transisi dari database historis berskala besar sebagai referensi probabilitas analitik, bukan sebagai jaminan kepastian mutlak.")
@@ -173,7 +163,7 @@ def main():
     with colB:
         baseline = st.text_input(f"Masukkan Hasil {prev_hari} (Baseline H-1):", max_chars=4)
         
-    if st.button("Jalankan Mesin GLM 6.0", type="primary"):
+    if st.button("Jalankan Pemurnian GLM 6.0", type="primary"):
         if len(baseline) != 4 or not baseline.isdigit():
             st.error("Input eror. Masukkan tepat 4 digit.")
             return
@@ -181,43 +171,38 @@ def main():
         data_prev = df_matrix[prev_hari].tolist()
         data_target = df_matrix[target_hari].tolist()
         
-        # FIX: Penyesuaian jika target hari adalah Senin
         if target_hari == "Senin":
             data_target = data_target[1:] + [""]
             data_prev = data_prev[:len(data_target)]
             
-        with st.spinner("Memproses Markov Order-2 & Twin Filter..."):
+        with st.spinner("Memproses Analisis Probabilitas Terkalibrasi..."):
             front_scores, df_2d, hist_2d_str_list, twin_mult = hybrid_engine_order2(data_prev, data_target, baseline)
             df_combos = generate_combinations(front_scores, df_2d, twin_mult)
             
-            # Ekstraksi Posisi (Format 2 Line Bersih)
             as_line = f"{front_scores[0].iloc[0]['Digit']} & {front_scores[0].iloc[1]['Digit']}"
             kop_line = f"{front_scores[1].iloc[0]['Digit']} & {front_scores[1].iloc[1]['Digit']}"
             
-            # Kepala & Ekor diekstrak dari blok 2D terbaik agar akurat
-            top_kepala = list(dict.fromkeys([x[0] for x in df_2d["2D"].head(5)]))
-            top_ekor = list(dict.fromkeys([x[1] for x in df_2d["2D"].head(5)]))
+            top_kepala = list(dict.fromkeys([x[0] for x in df_2d["2D"].head(6)]))
+            top_ekor = list(dict.fromkeys([x[1] for x in df_2d["2D"].head(6)]))
             kep_line = f"{top_kepala[0]} & {top_kepala[1]}" if len(top_kepala)>1 else top_kepala[0]
             eko_line = f"{top_ekor[0]} & {top_ekor[1]}" if len(top_ekor)>1 else top_ekor[0]
             
-            # Ekstraksi Top Line
             list_4d = df_combos["4D"].head(4).tolist()
             list_3d = df_combos.drop_duplicates("3D")["3D"].head(4).tolist()
             list_2d = df_combos.drop_duplicates("2D")["2D"].head(4).tolist()
             
             hist_2d_str = ", ".join(hist_2d_str_list) if hist_2d_str_list else "Belum ada sejarah utuh"
             
-            # BBFS Ekstraksi dari kekuatan penuh
             all_digits = (
-                front_scores[0].head(3)["Digit"].tolist() + 
-                front_scores[1].head(3)["Digit"].tolist() + 
-                top_kepala[:3] + top_ekor[:3]
+                front_scores[0].head(2)["Digit"].tolist() + 
+                front_scores[1].head(2)["Digit"].tolist() + 
+                top_kepala[:2] + top_ekor[:2]
             )
             bbfs_counts = Counter(all_digits)
             bbfs6 = "".join([item[0] for item in bbfs_counts.most_common(6)])
         
         st.divider()
-        st.success("✅ Algoritma Selesai! Output Siap Disalin.")
+        st.success("✅ Kalibrasi Sukses! Output Siap Disalin.")
         
         raw_text = f"""Analisis Posisi Angka:
 
