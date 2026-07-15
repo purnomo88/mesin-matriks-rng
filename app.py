@@ -2,14 +2,22 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import re
+import gspread
 from collections import Counter
 from itertools import product
 from scipy.stats import chisquare
+from google.oauth2.service_account import Credentials
 
 st.set_page_config(page_title="4D Probabilistic Strength Analyzer", layout="wide")
 
-# GANTI LINK DI BAWAH DENGAN LINK CSV GOOGLE SHEETS ANDA
-GOOGLE_SHEETS_CSV_URL = "https://docs.google.com/spreadsheets/d/1prsu_8P8rxoKluOdbozwPrCdtJmGd9kBoqzfDnqVlVU/export?format=csv&gid=1770339168"
+SPREADSHEET_ID = "1prsu_8P8rxoKluOdbozwPrCdtJmGd9kBoqzfDnqVlVU"
+WORKSHEET_NAME = "DB"
+HEADERS = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"]
+
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
 
 st.title("Multi-Signal 4D Probability Engine")
 st.warning(
@@ -20,24 +28,36 @@ st.warning(
     "ranking, not an absolute forecast."
 )
 
+@st.cache_resource
+def get_gsheet_client():
+    creds = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
+        scopes=SCOPES
+    )
+    return gspread.authorize(creds)
 
 @st.cache_data(ttl=600, show_spinner=True)
-def load_data(source):
+def load_data():
     try:
-        df = pd.read_csv(source, header=None)
+        client = get_gsheet_client()
+        ws = client.open_by_key(SPREADSHEET_ID).worksheet(WORKSHEET_NAME)
+        rows = ws.get_all_values()
     except Exception as e:
-        raise ValueError(f"Failed to read data source: {e}")
+        raise ValueError(f"Failed to read Google Sheet DB: {e}")
 
-    if df.empty:
-        raise ValueError("The data source is empty.")
+    if not rows:
+        raise ValueError("The DB sheet is empty.")
 
-    df = df.iloc[1:]
+    data_rows = rows[1:] if len(rows) > 1 else []
+    normalized_rows = [(row + [""] * 7)[:7] for row in data_rows]
+    df_sheet = pd.DataFrame(normalized_rows, columns=HEADERS)
 
     cells = []
-    for row in df.itertuples(index=False):
+    for row in df_sheet.itertuples(index=False):
         for val in row:
-            if pd.notna(val):
-                cells.append(str(val))
+            sval = str(val).strip()
+            if sval:
+                cells.append(sval)
 
     flat_text = " ".join(cells)
     tokens = re.findall(r"\d{4}", flat_text)
@@ -50,8 +70,7 @@ def load_data(source):
     if len(tokens) < 10:
         raise ValueError("Not enough valid 4-digit entries found (minimum 10 required).")
 
-    return np.array(tokens, dtype=str)
-
+    return np.array(tokens, dtype=str), df_sheet
 
 def chi_square_sanity_check(history: np.ndarray):
     n = len(history)
@@ -69,10 +88,8 @@ def chi_square_sanity_check(history: np.ndarray):
         })
     return pd.DataFrame(results)
 
-
 def build_pairs(history: np.ndarray):
     return list(zip(history[:-1], history[1:]))
-
 
 def per_position_scores(history: np.ndarray, pairs, baseline: str, recency_halflife: int = 50):
     n = len(history)
@@ -114,14 +131,12 @@ def per_position_scores(history: np.ndarray, pairs, baseline: str, recency_halfl
 
     return scores
 
-
 def full_2d_markov(pairs, target_2d, top_n=5):
     counter = Counter()
     for today, tomorrow in pairs:
         if today[2:] == target_2d:
             counter[tomorrow[2:]] += 1
     return counter.most_common(top_n)
-
 
 def generate_strong_numbers(scores, top_k=(2, 2, 3, 3)):
     top_per_pos = []
@@ -144,19 +159,14 @@ def generate_strong_numbers(scores, top_k=(2, 2, 3, 3)):
     combos = pd.DataFrame(combos).sort_values("Total_Score", ascending=False).reset_index(drop=True)
     return combos
 
-
 def main():
     st.sidebar.header("Settings")
     recency_halflife = st.sidebar.slider(
         "Recency Half-life (smaller = more focus on recent data)", 10, 200, 50
     )
 
-    if not GOOGLE_SHEETS_CSV_URL.strip() or GOOGLE_SHEETS_CSV_URL == "PASTE_LINK_CSV_GOOGLE_SHEETS_DI_SINI":
-        st.error("Please fill GOOGLE_SHEETS_CSV_URL in app.py first.")
-        return
-
     try:
-        history = load_data(GOOGLE_SHEETS_CSV_URL.strip())
+        history, df_sheet = load_data()
     except ValueError as ve:
         st.error(f"Data Error: {ve}")
         return
@@ -165,7 +175,10 @@ def main():
         return
 
     st.success(f"{len(history)} historical 4D entries loaded successfully.")
-    st.caption("Data source: Google Sheets CSV URL")
+    st.caption("Data source: Google Sheets worksheet 'DB'")
+
+    with st.expander("Preview DB Sheet"):
+        st.dataframe(df_sheet.tail(20), use_container_width=True)
 
     with st.expander("Sanity Check: Chi-Square Test (Is This Data Truly Random?)"):
         st.dataframe(chi_square_sanity_check(history), use_container_width=True)
@@ -233,7 +246,6 @@ def main():
         "This ranking does NOT change the base probability of a truly random RNG - "
         "use it as exploratory reference, not a guaranteed outcome."
     )
-
 
 if __name__ == "__main__":
     main()
